@@ -26,16 +26,41 @@ fields:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+  founded_date:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+  core_business:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: product_context
+  core_competency:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: product_context
+  industry_positioning:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
   company_achievement:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    aliases: [company_achievements]
+    note: "v1/v2 使用 company_achievement，v3 使用 company_achievements（复数）"
   founder_name:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
     context_budget_tokens: 1600
     max_evidence_chunks: 4
+    sub_budget: founder_context
     keywords:
       - founder
       - CEO
@@ -47,6 +72,7 @@ fields:
     if_missing: unavailable
     context_budget_tokens: 800
     max_evidence_chunks: 3
+    sub_budget: founder_context
     keywords:
       - education
       - university
@@ -59,10 +85,12 @@ fields:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: founder_context
   founder_achievement:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: founder_context
   team_size:
     category: A
     resolution_type: official_fact
@@ -77,6 +105,7 @@ fields:
     if_missing: unavailable
     context_budget_tokens: 1600
     max_evidence_chunks: 5
+    sub_budget: founder_context
     preferred_sources:
       - official_blog
       - press_release
@@ -96,39 +125,325 @@ fields:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+
+  # -- 产品相关 --
   main_product_name:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: product_context
   main_product_def:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: product_context
   main_product_highlight:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: product_context
   main_product_achievement:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: product_context
   main_product_img_src:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+  product_pain_points:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 1200
+    max_evidence_chunks: 3
+    sub_budget: product_context
+  product_core_features:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 1200
+    max_evidence_chunks: 3
+    sub_budget: product_context
+  product_usage_playbook:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: product_context
   tech_stack:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    aliases: [product_tech_stack]
+    note: "v1/v2 使用 tech_stack，v3 使用 product_tech_stack"
   other_products:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+
+  # -- 定价 --
+  pricing_summary:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: product_context
+  pricing_tiers:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: product_context
+  pricing_strategy:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: product_context
+
+  # -- 市场/区域聚焦 --
+  regional_market_focus:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: market_context
+  regional_markets:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: market_context
+
+  # -- 客户 --
+  customer_names:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: customer_context
+  customer_selection_reasons:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: customer_context
+  customer_choice_evidence:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: customer_context
+  ideal_customer_profile:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: customer_context
+  customer_segment:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: customer_context
+  customer_segment_primary:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: customer_context
+  customer_segment_secondary:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: customer_context
+
+  # -- 商业/增长 --
+  revenue_model:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: gtm_context
+  gtm_motion:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    aliases: [gtm_strategy]
+    note: "v1/v2 使用 gtm_motion，v3 使用 gtm_strategy"
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: gtm_context
+  growth_strategy:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: gtm_context
+  acquisition_channels:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: gtm_context
+  growth_flywheel:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: gtm_context
+  cold_start:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: gtm_context
+
+  # -- 竞争/壁垒 --
   competitors:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
+    sub_budget: competition_context
+  competitors_top3:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: competition_context
   competitors_summary:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    sub_budget: competition_context
+  competitive_position:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  competitive_advantages:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  differentiation_strategy:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    aliases: [differentiated_opportunity]
+    note: "v1/v2 使用 differentiation_strategy，v3 使用 differentiated_opportunity"
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  moat:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 1200
+    max_evidence_chunks: 3
+    sub_budget: competition_context
+  technical_barrier:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  switching_cost:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  cost_advantage:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  ecosystem_niche:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+  ecosystem_positioning:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+
+  # -- 市场格局 --
+  market_opportunity:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 1600
+    max_evidence_chunks: 4
+    sub_budget: market_context
+  market_landscape_summary:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 1600
+    max_evidence_chunks: 4
+    sub_budget: market_context
+  market_landscape_top_players:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: market_context
+
+  # -- 时间线 --
+  timeline_events:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    type: json_text
+
+  # -- 数据质量 --
+  data_confidence:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+
+  # -- 传播钩子段落 --
+  hook_paragraph_1:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+  hook_paragraph_2:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+  hook_paragraph_3:
     category: A
     resolution_type: official_fact
     if_missing: unavailable
@@ -152,6 +467,12 @@ fields:
     formula: FUNDING_MAP[funding_stage]
     required_inputs: [funding_stage]
     if_missing: derived
+  funding_rounds:
+    category: B
+    resolution_type: derived
+    formula: extract_rounds(funding_info)
+    required_inputs: [funding_info]
+    if_missing: unavailable
 
   # ── C 类：市场估算 ──
   tam:
@@ -161,6 +482,7 @@ fields:
     if_missing: manual_needed
     context_budget_tokens: 2200
     max_evidence_chunks: 6
+    sub_budget: market_context
     required_context:
       - region
       - segment
@@ -181,21 +503,73 @@ fields:
     resolution_type: market_model
     allow_proxy: true
     if_missing: manual_needed
+    sub_budget: market_context
   som:
     category: C
     resolution_type: market_model
     allow_proxy: true
     if_missing: manual_needed
+    sub_budget: market_context
   market_cagr:
     category: C
     resolution_type: market_model
     allow_proxy: true
     if_missing: manual_needed
+    sub_budget: market_context
   market_size_source_note:
     category: C
     resolution_type: market_model
     allow_proxy: true
     if_missing: manual_needed
+    sub_budget: market_context
+  market_size_value:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    context_budget_tokens: 1600
+    max_evidence_chunks: 5
+    sub_budget: market_context
+    required_context:
+      - region
+      - year
+      - source
+  market_size_currency:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    sub_budget: market_context
+  market_size_year:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    sub_budget: market_context
+  tam_value:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    context_budget_tokens: 1600
+    max_evidence_chunks: 5
+    sub_budget: market_context
+    required_context:
+      - region
+      - year
+      - source
+  tam_currency:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    sub_budget: market_context
+  tam_year:
+    category: C
+    resolution_type: market_model
+    allow_proxy: true
+    if_missing: manual_needed
+    sub_budget: market_context
 
   # ── D 类：私有经营指标 ──
   arr:
@@ -210,6 +584,7 @@ fields:
     if_missing: unavailable
     context_budget_tokens: 800
     max_evidence_chunks: 3
+    sub_budget: product_context
     refetchable: false
     confirm_requires_sources:
       - financial_database
@@ -257,6 +632,40 @@ fields:
     resolution_type: private_metric
     allow_proxy: false
     if_missing: unavailable
+  mau:
+    category: D
+    resolution_type: private_metric
+    allow_proxy: false
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: product_context
+    refetchable: false
+  mau_as_of:
+    category: D
+    resolution_type: private_metric
+    allow_proxy: false
+    if_missing: unavailable
+    refetchable: false
+  retention_definition:
+    category: D
+    resolution_type: private_metric
+    allow_proxy: false
+    if_missing: unavailable
+    refetchable: false
+  ltv_cac_is_benchmark:
+    category: D
+    resolution_type: private_metric
+    allow_proxy: false
+    if_missing: unavailable
+    refetchable: false
+    note: "0=公司实际披露，1=行业基准替代（不代表公司披露）"
+  ltv_cac_benchmark_source:
+    category: D
+    resolution_type: private_metric
+    allow_proxy: false
+    if_missing: unavailable
+    refetchable: false
 
   # ── E 类：B2B 不适配（根据 company_type 判定）──
   active_users:

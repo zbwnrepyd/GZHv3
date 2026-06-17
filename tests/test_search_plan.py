@@ -43,10 +43,19 @@ class SearchPlanTests(unittest.TestCase):
             ["Azra Games", "Azragames", "azragames.com"],
         )
         intents = {q.intent for q in plan.tavily_queries}
+        # P0: D-class 字段（retention_metrics/unit_economics/capital_efficiency/
+        # revenue_metrics/user_metrics/growth_metrics/revenue/regional）已从初始搜索
+        # 计划中移除，仅保留 market_size 作为运营指标意图
         self.assertTrue(
-            {"market_size", "revenue_metrics", "user_metrics",
-             "retention_metrics", "unit_economics", "capital_efficiency"}.issubset(intents),
-            f"Missing operating metric intents, got: {intents}",
+            "market_size" in intents,
+            f"Missing market_size intent, got: {intents}",
+        )
+        # P0: D-class 意图不得出现在初始搜索计划中
+        self.assertFalse(
+            {"retention_metrics", "unit_economics", "capital_efficiency",
+             "revenue_metrics", "user_metrics", "growth_metrics", "revenue",
+             "regional"} & intents,
+            f"D-class intents should not be in search plan, got: {intents}",
         )
 
     def test_plan_includes_v3_deep_research_intents(self):
@@ -55,10 +64,18 @@ class SearchPlanTests(unittest.TestCase):
             ["Perplexity", "perplexity", "perplexity.ai"],
         )
         intents = {q.intent for q in plan.tavily_queries}
+        # P0: TAVILY_QUERY_BUDGET_DEEP=18，优先覆盖高优先级意图
+        # v3 核心意图（customers/pricing_details/youtube_transcript/competitive_position）
+        # 必须在第一轮覆盖；differentiated_opportunity 可能因预算限制被截断
         self.assertTrue(
             {"customers", "pricing_details", "youtube_transcript",
-             "competitive_position", "differentiated_opportunity"}.issubset(intents),
+             "competitive_position"}.issubset(intents),
             f"Missing v3 intents, got: {intents}",
+        )
+        # P0: 验证 D-class 意图不在搜索计划中
+        self.assertFalse(
+            {"retention_metrics", "unit_economics", "capital_efficiency"} & intents,
+            f"D-class intents should not be in search plan, got: {intents}",
         )
 
     def test_gap_detector_generates_operating_metric_queries(self):

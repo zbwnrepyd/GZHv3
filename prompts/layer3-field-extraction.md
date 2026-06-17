@@ -9,6 +9,7 @@
 ## 输出字段
 
 输出一个 JSON 对象。**所有字段必须有值**——找不到信息的字段填 `"暂缺"`。绝不编造。
+**私有指标约束**：私有经营指标（`mau`/`retention_rate`/`ltv`/`cac`/`churn_rate`/`gross_margin`/`burn_rate`/`runway_months`）仅在确有公开来源（官方披露、财报、权威媒体引用）时填写具体数值，否则留空（填 `"暂缺"` 或 null）。禁止根据融资额、团队规模或行业惯例倒推编造数值。
 
 ```json
 {
@@ -104,6 +105,85 @@
       "rank": 1
     }
   ],
+
+  // ================================================================
+  // V3 专用字段（公司简介 Page 2）
+  // ================================================================
+  "market_landscape_summary": "赛道市场格局一句话描述（200字内，含Top玩家名）。找不到填「暂缺」。",
+  "market_landscape_top_players": [
+    {"name": "玩家名", "description": "一句话描述", "market_position": "市场定位"}
+  ],
+  "market_size_value": 45.2,
+  "market_size_currency": "USD/CNY/EUR",
+  "market_size_year": 2024,
+  "tam_value": "TAM数值（如 180.5）。如果前文 tam 字段为文本格式「暂缺」则此处填 null。",
+  "tam_currency": "USD/CNY/EUR。tam_value 为 null 时填 null。",
+  "tam_year": "TAM口径年份。tam_value 为 null 时填 null。",
+  "founded_date": "成立年月（YYYY-MM 或 YYYY）。找不到填「暂缺」。",
+  "core_business": "主营业务一句话（150字内）。区别于 company_def 的公司定性，侧重业务实质描述。找不到填「暂缺」。",
+  "core_competency": "核心竞争优势（200字内）。找不到填「暂缺」。",
+  "funding_rounds": [
+    {"round": "A轮", "date": "YYYY-MM", "amount_usd": "金额（美元，如 12M）", "valuation_usd": "估值（美元，如 80M，未知填 null）", "lead_investor": "领投方", "investors": "跟投方逗号分隔"}
+  ],
+  "company_achievements": "公司成就里程碑列表（每项一行，最多5项）。与 company_achievement 字段互补：后者是摘要文案，此处是结构化列表。找不到填「暂缺」。",
+  "industry_positioning": "行业定位语（50字内）。找不到填「暂缺」。",
+
+  // ================================================================
+  // V3 专用字段（主产品 Page 3）
+  // ================================================================
+  "product_pain_points": [
+    {"pain_point": "痛点描述", "severity": "high | medium | low"}
+  ],
+  "product_core_features": [
+    {"feature_name": "功能名称", "description": "功能描述"}
+  ],
+  "product_usage_playbook": "核心用法/典型工作流描述（200字内）。找不到填「暂缺」。",
+  "product_tech_stack": "技术栈详情（200字内）。替代旧的 tech_stack 字段，更详细地描述核心技术选型、架构决策、自研与第三方比例。找不到填「暂缺」。",
+  "regional_market_focus": [
+    {"region": "地区名（如 北美/欧洲/亚太）", "status": "主力市场 | 拓展中 | 计划进入", "note": "备注"}
+  ],
+  "mau": "月活跃用户数。格式：「500万」。无公开披露填 null 或不输出此键。",
+  "mau_as_of": "MAU统计截止日期（YYYY-MM）。mau 为 null 时填 null。",
+  "retention_definition": "留存率口径说明（如「次日留存」「月留存」）。无公开披露填「暂缺」。",
+  "pricing_summary": "定价摘要（150字内）。找不到填「暂缺」。",
+  "pricing_tiers": [
+    {"tier_name": "套餐名（如 Free/Pro/Enterprise）", "price": "价格（如 $0 / $29/月 / 按量计费）", "billing_period": "monthly | annual | usage_based | one_time", "features": "核心功能逗号分隔"}
+  ],
+
+  // ================================================================
+  // V3 专用字段（用户群体 Page 5）
+  // ================================================================
+  "customer_names": [
+    {"name": "客户名称", "industry": "所属行业", "logo_url": "Logo URL（找不到填空字符串）"}
+  ],
+  "customer_selection_reasons": "客户选择理由（200字内，绑定具体案例）。找不到填「暂缺」。",
+  "customer_choice_evidence": [
+    {"customer_name": "客户名称", "evidence_type": "case_study | testimonial | press_release | social_proof", "evidence_summary": "证据摘要（100字内）"}
+  ],
+
+  // ================================================================
+  // V3 专用字段（公司能力分析 Page 6）
+  // ================================================================
+  "pricing_strategy": "定价策略分析（200字内）。结合 pricing_model 枚举展开为可读策略说明。找不到填「暂缺」。",
+  "ltv_cac_is_benchmark": true,
+  "ltv_cac_benchmark_source": "LTV/CAC benchmark 来源。ltv_cac_is_benchmark 为 true 时必填（如「SaaS Capital 2024 benchmark」），false 时填空字符串。",
+
+  // ================================================================
+  // V3 专用字段（增长与GTM Page 7）
+  // ================================================================
+  "acquisition_channels": [
+    {"channel": "渠道名（如 内容营销/PLG/社区/付费广告）", "effectiveness": "high | medium | low", "note": "效果说明（100字内）"}
+  ],
+
+  // ================================================================
+  // V3 专用字段（竞争态势 Page 8）
+  // ================================================================
+  "competitors_top3": [
+    {"name": "竞品公司名", "summary": "一句话描述", "overlap": "与目标公司重叠点", "difference": "与目标公司差异点", "url": "竞品官网URL"}
+  ],
+  "competitive_position": "被研公司在竞争中的位置（200字内）。找不到填「暂缺」。",
+  "differentiated_opportunity": "错位竞争机会（200字内）。说明如何避开或重构与传统玩家/巨头/同类创业公司的竞争，替代旧的 differentiation_strategy 字段。找不到填「暂缺」。",
+  "competitive_advantages": "竞争优势摘要（200字内）。找不到填「暂缺」。",
 
   // 以下字段归属套卡1（v1·经典8张），v2套卡不渲染但仍提取存储
   "timeline_events": [

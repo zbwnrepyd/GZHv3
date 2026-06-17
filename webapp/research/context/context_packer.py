@@ -10,9 +10,11 @@
 核心保证：
 - 任何 LLM 调用 used_tokens <= budget_tokens
 - raw_text 不直接进入 LLM（只传 chunk_text）
+- RAW_TEXT_IN_LLM_ENABLED=0 时，打包结果严禁包含 raw_text 字段
 """
 from __future__ import annotations
 import json
+import os
 import sqlite3
 from typing import Optional
 
@@ -23,6 +25,15 @@ from .token_budget import (
     get_field_max_chunks,
     BUDGET_PRESETS,
 )
+
+# ── RAW_TEXT 安全开关 ──
+_RAW_TEXT_IN_LLM_ENABLED = os.environ.get("RAW_TEXT_IN_LLM_ENABLED", "0") == "1"
+
+# chunk 返回字段白名单：严禁 raw_text 进入 LLM 上下文
+_CHUNK_OUTPUT_KEYS = {
+    "id", "chunk_text", "chunk_type", "source_type",
+    "source_url", "title", "token_estimate", "final_score",
+}
 
 # ── 来源类型比例上限（占上下文 token 总数的比例）──
 _SOURCE_TYPE_CAP: dict[str, float] = {
@@ -289,22 +300,28 @@ def pack_context(
     )
 
     # ── 构建返回 ──
+    packed_chunks = []
+    for c in selected_chunks:
+        # SPEC: 白名单过滤，严禁 raw_text 泄漏到 LLM 上下文
+        chunk_out = {k: v for k, v in c.items() if k in _CHUNK_OUTPUT_KEYS}
+        packed_chunks.append(chunk_out)
+
+    # 安全断言：当 RAW_TEXT_IN_LLM_ENABLED=0 时，验证无 raw_text 泄漏
+    if not _RAW_TEXT_IN_LLM_ENABLED:
+        for ch in packed_chunks:
+            if "raw_text" in ch:
+                raise RuntimeError(
+                    "RAW_TEXT_IN_LLM_ENABLED=0 but raw_text found in packed chunk. "
+                    "This is a safety violation — raw_text must never enter LLM context."
+                )
+
     return {
         "company_key": company_key,
         "target_type": target_type,
         "target_key": target_key,
         "budget_tokens": budget_tokens,
         "used_tokens": budget.used_tokens,
-        "chunks": [{
-            "id": c["id"],
-            "chunk_text": c["chunk_text"],
-            "chunk_type": c.get("chunk_type", "unknown"),
-            "source_type": c.get("source_type", ""),
-            "source_url": c.get("source_url", ""),
-            "title": c.get("title", ""),
-            "token_estimate": c.get("token_estimate", 0),
-            "final_score": c.get("final_score", 0),
-        } for c in selected_chunks],
+        "chunks": packed_chunks,
         "evidence_spans": [
             {k: v for k, v in s.items()
              if k in ("id", "field_key", "quote_text", "confidence",

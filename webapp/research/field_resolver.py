@@ -44,10 +44,56 @@ _LTV_CAC_INDUSTRY_BENCHMARKS = {
 }
 
 
+def _check_evidence_quality(evidence_span_ids: list, evidence_map: dict | None = None) -> dict:
+    """Check if evidence meets confirmed requirements.
+
+    Returns {passed: bool, reason: str, source_score: float, entity_score: float}
+
+    SPEC confirmed requirements:
+      - source_score >= 0.65
+      - entity_score >= 0.60
+      - no evidence has strength "weak"
+    """
+    if not evidence_span_ids:
+        return {"passed": False, "reason": "No evidence spans provided", "source_score": 0.0, "entity_score": 0.0}
+
+    if not evidence_map:
+        # Cannot check quality without evidence_map; assume passed
+        return {"passed": True, "reason": "No evidence_map for quality check", "source_score": 1.0, "entity_score": 1.0}
+
+    min_source = 1.0
+    min_entity = 1.0
+    has_weak = False
+
+    for sid in evidence_span_ids:
+        span = evidence_map.get(sid)
+        if not span:
+            continue
+        src = span.get("source_score", 0.0)
+        ent = span.get("entity_score", 0.0)
+        strength = span.get("strength", span.get("evidence_strength", ""))
+        if src < min_source:
+            min_source = src
+        if ent < min_entity:
+            min_entity = ent
+        if strength == "weak":
+            has_weak = True
+
+    if min_source < 0.65:
+        return {"passed": False, "reason": f"source_score {min_source:.2f} < 0.65", "source_score": min_source, "entity_score": min_entity}
+    if min_entity < 0.60:
+        return {"passed": False, "reason": f"entity_score {min_entity:.2f} < 0.60", "source_score": min_source, "entity_score": min_entity}
+    if has_weak:
+        return {"passed": False, "reason": "Evidence contains weak-strength spans", "source_score": min_source, "entity_score": min_entity}
+
+    return {"passed": True, "reason": "ok", "source_score": min_source, "entity_score": min_entity}
+
+
 def resolve_field(field_key: str, field_value: str | None,
                   resolved_pool: dict[str, FieldResult],
                   manifest_entry: dict | None = None,
-                  evidence_span_ids: Optional[list] = None) -> FieldResult:
+                  evidence_span_ids: Optional[list] = None,
+                  evidence_quality: Optional[dict] = None) -> FieldResult:
     """对单个字段运行解析策略
 
     P0 变更:
@@ -73,7 +119,8 @@ def resolve_field(field_key: str, field_value: str | None,
     # -- 有值时：根据 resolution_type + evidence 标记 --
     if not _is_missing(field_value):
         return _resolve_with_value(field_key, str(field_value), resolution_type,
-                                   resolved_pool, entry, has_evidence, evidence_span_ids or [])
+                                   resolved_pool, entry, has_evidence, evidence_span_ids or [],
+                                   evidence_quality=evidence_quality)
 
     # -- 无值时：按 if_missing 策略处理 --
     if_missing = entry.get("if_missing", "unavailable")
@@ -119,13 +166,33 @@ def resolve_field(field_key: str, field_value: str | None,
 def _resolve_with_value(field_key: str, value: str, resolution_type: str,
                         resolved_pool: dict, entry: dict,
                         has_evidence: bool,
-                        evidence_span_ids: list) -> FieldResult:
+                        evidence_span_ids: list,
+                        evidence_map: dict | None = None,
+                        evidence_quality: dict | None = None) -> FieldResult:
     """有值时的状态判定。
 
     P0: 核心变更 — official_fact 和 private_metric 需要证据绑定才能 confirmed。
+    SPEC: official_fact 除 evidence_span_ids 非空外，还需 source_score>=0.65,
+          entity_score>=0.60，且无 weak 证据。
     """
     if resolution_type == "official_fact":
         if has_evidence:
+            # SPEC: 证据质量闸门 — source_score / entity_score / strength
+            quality = evidence_quality or (
+                _check_evidence_quality(evidence_span_ids, evidence_map)
+                if evidence_map else {"passed": True}
+            )
+            if not quality.get("passed", True):
+                return FieldResult(
+                    field_key=field_key, value=value,
+                    resolution_status="llm_extracted", confidence="low",
+                    resolution_method="llm_extract_weak_evidence",
+                    evidence_span_ids=evidence_span_ids,
+                    unavailable_reason=(
+                        f"{field_key}: 证据质量不满足 confirmed 要求 — "
+                        f"{quality.get('reason', 'quality check failed')}"
+                    ),
+                )
             return FieldResult(
                 field_key=field_key, value=value,
                 resolution_status="confirmed", confidence="high" if len(evidence_span_ids) >= 2 else "medium",

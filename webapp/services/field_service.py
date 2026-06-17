@@ -6,6 +6,7 @@ from typing import Optional
 from repositories.field_repo import (
     insert_research_fields_batch, get_research_fields,
     upsert_final_field, get_final_fields, get_final_field_value,
+    get_final_card_values,
     confirm_all_fields, set_field_status,
 )
 
@@ -39,7 +40,7 @@ _V3_PAGE_FIELDS = {
     6: ["ecosystem_niche", "revenue_model", "pricing_strategy",
         "ltv", "cac", "ltv_cac_ratio", "ltv_cac_is_benchmark",
         "ltv_cac_benchmark_source"],
-    7: ["growth_strategy", "gtm_motion", "cold_start",
+    7: ["growth_strategy", "gtm_strategy", "cold_start",
         "growth_flywheel", "acquisition_channels"],
     8: ["competitors_top3", "competitive_position",
         "differentiated_opportunity", "competitive_advantages"],
@@ -104,10 +105,23 @@ def get_field_versions(db_path_research: str, company_name: str) -> dict[str, di
 
 def get_fields_with_versions(db_path_research: str, db_path_final: str,
                              company_name: str) -> list[dict]:
-    """返回完整的字段列表（含三版本 + 定稿状态）"""
+    """返回完整的字段列表（含三版本 + 定稿状态）。
+
+    定稿值优先级: final_card_values (SPEC v3 主读模型) → final_fields (向后兼容)。
+    """
     contract = load_field_contract()
     versioned = get_field_versions(db_path_research, company_name)
     final_fields = {f["field_key"]: f for f in get_final_fields(db_path_final, company_name)}
+
+    # SPEC v3: 加载 final_card_values 按 field_key 索引（取首张卡的值）
+    card_value_map: dict[str, dict] = {}
+    try:
+        for cv in get_final_card_values(db_path_final, company_name.lower()):
+            fk = cv.get("field_key", "")
+            if fk and fk not in card_value_map:
+                card_value_map[fk] = cv
+    except Exception:
+        pass
 
     result = []
     for group in contract.get("groups", []):
@@ -116,14 +130,26 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
             key = field_def["field_key"]
             vers = versioned.get(key, {})
             final = final_fields.get(key, {})
+            cv = card_value_map.get(key, {})
+
+            # SPEC v3: card_value 优先作为 final_value
+            cv_value = cv.get("field_value") or cv.get("final_value")
+            final_value = cv_value if cv_value is not None else final.get("final_value", vers.get("standard", ""))
+
+            # SPEC v3: resolution_status 优先，回退 final_fields status
+            cv_status = cv.get("resolution_status") or cv.get("status")
+            final_status = cv_status or final.get("status", "draft")
+
             group_fields.append({
                 "field_key": key,
                 "field_label": field_def["field_label"],
                 "type": field_def["type"],
                 "group_key": group["group_key"],
                 "versions": vers,
-                "final_value": final.get("final_value", vers.get("standard", "")),
-                "status": final.get("status", "draft"),
+                "final_value": final_value,
+                "status": final_status,
+                "card_no": cv.get("card_no"),  # 该值所属卡片页码
+                "confidence": cv.get("confidence_score") or cv.get("confidence"),
             })
         if group_fields:
             result.append({

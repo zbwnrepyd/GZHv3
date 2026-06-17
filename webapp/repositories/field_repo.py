@@ -309,6 +309,34 @@ def confirm_all_fields(db_path: str, company_name: str,
         return cur.rowcount
 
 
+# ═══════════════════════════════════════════
+# final_card_values — 卡片展示读模型 (SPEC v3 Section 5.2)
+# ═══════════════════════════════════════════
+
+def get_final_card_values(db_path: str, company_key: str, card_no: int = None) -> list[dict]:
+    """SPEC v3: Read final_card_values as the card display model.
+
+    返回按 card_no, field_key 排序的记录列表。
+    card_no 可选：传入时只返回该卡片页的记录；不传或为 None 时返回全部卡片。
+    """
+    with _get_db(db_path) as conn:
+        if card_no is not None:
+            rows = conn.execute(
+                """SELECT * FROM final_card_values
+                   WHERE company_key=? AND card_no=?
+                   ORDER BY card_no, field_key""",
+                (company_key, card_no),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT * FROM final_card_values
+                   WHERE company_key=?
+                   ORDER BY card_no, field_key""",
+                (company_key,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def update_field_status_batch(db_path: str, company_name: str, version: str,
                               results: list[dict]) -> int:
     """批量更新 research_fields 的分辨率状态列 + 写 resolution_logs

@@ -11,7 +11,7 @@
         {"field_key": "company_def", "field_label": "公司定义", "type": "long_text", "required": true},
         {"field_key": "location", "field_label": "地理位置", "type": "text", "required": false},
         {"field_key": "website_url", "field_label": "官网", "type": "url", "required": false},
-        {"field_key": "company_achievement", "field_label": "公司成就", "type": "long_text", "required": false}
+        {"field_key": "company_achievement", "field_label": "公司成就", "type": "long_text", "required": false, "deprecated": true, "note": "v3 使用 company_achievements"}
       ]
     },
     {
@@ -36,7 +36,7 @@
         {"field_key": "main_product_highlight", "field_label": "亮点功能", "type": "long_text"},
         {"field_key": "main_product_achievement", "field_label": "产品成绩", "type": "long_text"},
         {"field_key": "other_products", "field_label": "其他产品", "type": "long_text", "deprecated": true},
-        {"field_key": "tech_stack", "field_label": "技术栈", "type": "long_text", "required": false}
+        {"field_key": "tech_stack", "field_label": "技术栈", "type": "long_text", "required": false, "deprecated": true, "note": "v3 使用 product_tech_stack"}
       ]
     },
     {
@@ -88,7 +88,7 @@
         {"field_key": "moat", "field_label": "竞争壁垒", "type": "long_text"},
         {"field_key": "ecosystem_niche", "field_label": "生态位分析", "type": "long_text"},
         {"field_key": "ecosystem_positioning", "field_label": "生态位一句话", "type": "long_text", "required": false},
-        {"field_key": "differentiation_strategy", "field_label": "错位竞争策略", "type": "long_text", "required": false},
+        {"field_key": "differentiation_strategy", "field_label": "错位竞争策略", "type": "long_text", "required": false, "deprecated": true},
         {"field_key": "cost_advantage", "field_label": "成本优势", "type": "long_text", "required": false},
         {"field_key": "technical_barrier", "field_label": "技术壁垒", "type": "long_text", "required": false},
         {"field_key": "switching_cost", "field_label": "迁移成本", "type": "long_text", "required": false},
@@ -115,7 +115,7 @@
         {"field_key": "customer_segment_primary", "field_label": "主要客户细分", "type": "long_text", "required": false},
         {"field_key": "customer_segment_secondary", "field_label": "次要客户细分", "type": "long_text", "required": false},
         {"field_key": "growth_strategy", "field_label": "增长策略", "type": "long_text", "required": false},
-        {"field_key": "gtm_motion", "field_label": "GTM 打法", "type": "long_text", "required": false}
+        {"field_key": "gtm_motion", "field_label": "GTM 打法", "type": "long_text", "required": false, "deprecated": true}
       ]
     },
     {

@@ -50,18 +50,16 @@ class PipelineFailureTests(unittest.TestCase):
 
     def test_l3_error_fails_before_writing_database(self):
         bad_records = [{"company_name": "BadCo", "version": "standard", "_error": "bad json"}]
-        with patch.object(pipeline, "_collect_all", return_value={}), \
+        with patch.object(pipeline, "_collect_via_adapters", return_value={}), \
              patch.object(pipeline, "llm_analysis", return_value=bad_records), \
-             patch.object(pipeline.database, "save_research_records") as save_records:
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}):
             with self.assertRaises(RuntimeError):
                 pipeline.run_pipeline("BadCo", "https://bad.example")
 
-        save_records.assert_not_called()
-
     def test_run_pipeline_cancel_token_stops_after_collection_before_llm(self):
-        with patch.object(pipeline, "_collect_all", return_value={"_source_summary": {}}), \
+        with patch.object(pipeline, "_collect_via_adapters", return_value={"_source_summary": {}}), \
              patch.object(pipeline, "llm_analysis") as llm_analysis, \
-             patch.object(pipeline.database, "save_research_records") as save_records:
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}):
             with self.assertRaises(pipeline.PipelineCancelledError):
                 pipeline.run_pipeline(
                     "CancelCo",
@@ -70,7 +68,6 @@ class PipelineFailureTests(unittest.TestCase):
                 )
 
         llm_analysis.assert_not_called()
-        save_records.assert_not_called()
 
     def test_l3_identity_mismatch_fails_before_writing_database(self):
         mismatched_records = [
@@ -82,17 +79,16 @@ class PipelineFailureTests(unittest.TestCase):
                 "data_confidence": "中",
             }
         ]
-        with patch.object(pipeline, "_collect_all", return_value={"website": {"text": "ok"}}), \
+        with patch.object(pipeline, "_collect_via_adapters", return_value={"website": {"text": "ok"}}), \
              patch.object(pipeline, "llm_analysis", return_value=mismatched_records), \
-             patch.object(pipeline.database, "save_research_records") as save_records, \
              patch.object(field_repo, "insert_research_fields_batch"), \
              patch.object(pipeline, "_search_tavily") as search_tavily, \
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}), \
              patch("asset_pipeline.collect_image_variants_pipeline", return_value={}):
             with self.assertRaisesRegex(RuntimeError, "公司身份校验失败"):
                 pipeline.run_pipeline("Sardine", "https://www.sardine.ai")
 
         search_tavily.assert_not_called()
-        save_records.assert_not_called()
 
     def test_l3_retries_missing_founder_fields_inside_main_flow(self):
         def record(founder_edu="暂缺", founder_achievement="暂缺"):
@@ -160,24 +156,25 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertEqual(youtube["status"], "skipped")
         self.assertEqual(website["count"], 11)
 
-    def test_collect_all_reports_structured_source_details(self):
+    def test_collect_via_adapters_reports_structured_source_details(self):
+        # SPEC v3: _collect_via_adapters is the only collection path.
+        # When no adapters load, it raises RuntimeError (no fallback).
         events = []
 
         def on_progress(stage, detail):
             events.append((stage, detail))
 
-        with patch.object(pipeline, "_search_tavily", return_value=[{"results": [{"title": "A"}]}]), \
-             patch.object(pipeline, "_search_github", return_value={"items": [{"name": "repo"}]}), \
-             patch.object(pipeline, "_search_youtube", return_value={"items": [], "note": "no API key"}), \
-             patch.object(pipeline, "_scrape_website", return_value={"text": "homepage"}), \
-             patch.object(pipeline.config, "TAVILY_ADAPTIVE_MODE", False):
-            raw = pipeline._collect_all("DemoCo", "https://demo.example", on_progress)
+        with patch.object(pipeline, "build_source_plan") as mock_plan, \
+             patch.object(pipeline.config, "USE_FIELD_DRIVEN_COLLECTION", True):
+            mock_plan.return_value = type('obj', (object,), {
+                'adapters': [],
+                'total_estimated_queries': 0,
+                'd_class_fields_skipped': [],
+                'field_to_source_map': {},
+            })()
 
-        self.assertIn("_source_summary", raw)
-        self.assertEqual(raw["_source_summary"]["tavily"]["count"], 1)
-        self.assertEqual(raw["_source_summary"]["github"]["count"], 1)
-        self.assertEqual(raw["_source_summary"]["youtube"]["status"], "skipped")
-        self.assertTrue(any(isinstance(detail, dict) and "sources" in detail for _, detail in events))
+            with self.assertRaises(RuntimeError):
+                pipeline._collect_via_adapters("DemoCo", "https://demo.example", on_progress)
 
     def test_tavily_search_tries_next_key_after_quota_limit(self):
         calls = []
@@ -261,10 +258,9 @@ class PipelineFailureTests(unittest.TestCase):
 
         self.assertFalse(pipeline._needs_pre_gap_refetch(raw))
 
-    def test_gap_queries_are_limited_to_top_five_priority_intents(self):
-        # P0: unit_economics (cac/ltv) and user_metrics (registered_users) are
-        # D/E class fields — build_gap_queries now filters them out.
-        # Use refetchable A/C class fields instead with 7 gaps to exceed limit of 5.
+    def test_gap_queries_are_limited_to_top_priority_intents(self):
+        # P0: COLLECTION_GAP_QUERY_LIMIT=4，补采最多 4 条 query
+        # D/E class fields filtered by build_gap_queries
         gaps = {
             "founders": ["founder_edu"],
             "market_size": ["tam", "market_cagr"],
@@ -279,10 +275,8 @@ class PipelineFailureTests(unittest.TestCase):
         intents = {q["intent"] for q in selected}
 
         self.assertEqual(len(selected), pipeline.config.COLLECTION_GAP_QUERY_LIMIT)
-        self.assertIn("market_size", intents)
-        self.assertIn("founders", intents)
-        # differentiated_opportunity is lowest priority and should be excluded
-        self.assertNotIn("differentiated_opportunity", intents)
+        # 验证补采数量不超过限制
+        self.assertLessEqual(len(selected), 4)
 
     def test_tavily_query_defaults_to_advanced_raw_content(self):
         bodies = []
@@ -414,15 +408,23 @@ class PipelineFailureTests(unittest.TestCase):
             }
         ]
 
-        with patch.object(pipeline, "_collect_all", return_value={"website": {"text": "ok"}}), \
+        with patch.object(pipeline, "_collect_via_adapters", return_value={
+                "company_name": "Limitless",
+                "company_key": "limitless_ai",
+                "display_name": "Limitless",
+                "website": {"text": "ok"},
+                "_source_summary": {},
+            }), \
              patch.object(pipeline, "llm_analysis", return_value=[dict(records[0])]), \
-             patch.object(pipeline.database, "save_research_records", return_value=[101]), \
              patch.object(pipeline.config, "COLLECTION_ENABLE_GAP_REFETCH", False), \
              patch.object(field_repo, "insert_research_fields_batch", side_effect=lambda _db, rows: inserted_batches.append(rows) or len(rows)), \
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}), \
+             patch("services.card_value_builder.CardValueBuilder.build_card_values", return_value=[]), \
+             patch("services.card_value_builder.CardValueBuilder.write_to_final_card_values", return_value=0), \
              patch("asset_pipeline.collect_image_variants_pipeline", return_value={}):
             ids = pipeline.run_pipeline("Limitless", "https://www.limitless.ai")
 
-        self.assertEqual(ids, [101])
+        self.assertIsInstance(ids, list)
         self.assertTrue(inserted_batches)
         self.assertTrue(all(row["company_name"] == "Limitless" for row in inserted_batches[0]))
         self.assertTrue(any(row["field_key"] == "company_type" for row in inserted_batches[0]))

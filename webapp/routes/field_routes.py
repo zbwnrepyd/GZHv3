@@ -37,11 +37,21 @@ def register(bp: Blueprint):
 
     @bp.route("/fields/<company>/final")
     def get_final_fields_route(company: str):
-        """返回 final_fields"""
+        """返回 final_fields + final_card_values（SPEC v3 主读模型）"""
         try:
-            from repositories.field_repo import get_final_fields
+            from repositories.field_repo import get_final_fields, get_final_card_values
             fields = get_final_fields(config.DB_PATH_FINAL, company)
-            return jsonify({"company_name": company, "fields": fields})
+            # SPEC v3: 同时返回 final_card_values (卡片展示读模型)
+            card_values = []
+            try:
+                card_values = get_final_card_values(config.DB_PATH_FINAL, company.lower())
+            except Exception:
+                pass
+            return jsonify({
+                "company_name": company,
+                "fields": fields,
+                "card_values": card_values,
+            })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

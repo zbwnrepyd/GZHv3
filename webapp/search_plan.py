@@ -54,50 +54,17 @@ TAVILY_QUERY_TEMPLATES: dict[str, list[str]] = {
         "{term} market landscape competitive analysis",
         "{term} similar companies alternatives",
     ],
-    # v2 专项意图
-    "revenue": [
-        "{term} revenue ARR MRR annual recurring income",
-        "{term} revenue financial results earnings report",
-    ],
-    "growth_metrics": [
-        "{term} users MAU DAU customers growth statistics",
-        "{term} user base registered users paying customers enterprise clients",
-    ],
-    "regional": [
-        "{term} market region global expansion country presence",
-        "{term} customers by region market share geography",
-    ],
     # 运营数据专项：借鉴 data-analytics-skills 的“子问题 + 数据依赖”拆解
     "market_size": [
         "{term} TAM SAM SOM market size CAGR report",
         "{term} total addressable market serviceable obtainable market",
         "{term} market size growth rate CAGR industry report",
     ],
-    "revenue_metrics": [
-        "{term} ARR MRR revenue annual recurring revenue",
-        "{term} revenue run rate financial metrics",
-    ],
-    "user_metrics": [
-        "{term} registered users active users MAU DAU paying users",
-        "{term} customers users adoption growth metrics",
-    ],
-    "retention_metrics": [
-        "{term} retention rate churn rate cohort retention",
-        "{term} user retention engagement churn metrics",
-    ],
-    "unit_economics": [
-        "{term} CAC LTV LTV CAC gross margin payback period",
-        "{term} customer acquisition cost lifetime value unit economics",
-    ],
-    "capital_efficiency": [
-        "{term} burn rate runway cash runway gross margin",
-        "{term} operating metrics burn runway funding efficiency",
-    ],
     "achievement": [
         "{term} milestone achievement award recognition notable",
         "{term} announced partnership customer signed deal",
     ],
-    "tech_stack": [
+    "product_tech_stack": [
         "{term} technology stack built using architecture infrastructure",
         "{term} AI model LLM API technical architecture engineering blog",
     ],
@@ -164,10 +131,8 @@ def build_search_plan(display_name: str, root_domain: str,
 
     core_intents = ["overview", "founders", "funding",
                     "product", "pricing", "competitors",
-                    "revenue", "growth_metrics", "regional",
-                    "market_size", "revenue_metrics", "user_metrics",
-                    "retention_metrics", "unit_economics", "capital_efficiency",
-                    "achievement", "tech_stack",
+                    "market_size",
+                    "achievement", "product_tech_stack",
                     # v3 新增意图
                     "customers", "pricing_details", "youtube_transcript",
                     "competitive_position", "differentiated_opportunity"]
@@ -199,7 +164,7 @@ def build_search_plan(display_name: str, root_domain: str,
         for term in terms[:3]:
             # 每意图取第1个模板（保证广度覆盖所有意图），关键意图取2个
             limit = 2 if intent in ("funding", "product", "founders",
-                                    "market_size", "user_metrics") else 1
+                                    "market_size") else 1
             for tmpl in templates[:limit]:
                 if len(tavily_queries) >= budget:
                     break

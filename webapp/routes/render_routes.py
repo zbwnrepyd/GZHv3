@@ -5,15 +5,38 @@ from __future__ import annotations
 from flask import Blueprint, request, jsonify
 from config import config
 from repositories.card_config_repo import get_enabled_cards, get_card_items
-from repositories.field_repo import get_final_field_value, get_research_field_value, _EMPTY_FINAL
+from repositories.field_repo import (
+    get_final_field_value, get_research_field_value, get_final_card_values, _EMPTY_FINAL,
+)
 from repositories.template_repo import get_template
 from repositories.layout_repo import get_layout
 from asset_store import ensure_assets_rows, get_asset
 from services.card_config_service import create_default_cards_for_company
 
 
-def _resolve_field_value(company: str, field_key: str) -> str:
-    """解析字段值：已定稿 → 用定稿值（含空字符串）；从未定稿 → 回退研究值。"""
+def _resolve_field_value(company: str, field_key: str, card_no: int = None) -> str:
+    """解析字段值。
+    优先级: final_card_values (SPEC v3 主读模型) → final_fields (向后兼容) → research_fields。
+    """
+    company_key = company.lower()
+
+    # SPEC v3: 优先读 final_card_values (卡片展示读模型)
+    if card_no is not None:
+        try:
+            rows = get_final_card_values(config.DB_PATH_FINAL, company_key, card_no=card_no)
+        except Exception:
+            rows = []
+    else:
+        try:
+            rows = get_final_card_values(config.DB_PATH_FINAL, company_key)
+        except Exception:
+            rows = []
+    for r in rows:
+        if r.get("field_key") == field_key:
+            val = r.get("field_value") or r.get("final_value") or ""
+            return val
+
+    # 回退：final_fields (向后兼容)
     raw = get_final_field_value(config.DB_PATH_FINAL, company, field_key)
     if raw is _EMPTY_FINAL:
         return ""  # 用户显式清空
@@ -68,7 +91,7 @@ def register(bp: Blueprint):
                 for item in items:
                     resolved = dict(item)
                     if item["item_type"] == "field":
-                        resolved["value"] = _resolve_field_value(company, item["item_key"])
+                        resolved["value"] = _resolve_field_value(company, item["item_key"], card.get("card_index"))
                     elif item["item_type"] == "media":
                         resolved["url"] = _media_url(company, item["item_key"])
                         resolved["media_label"] = item.get("item_label", "")
@@ -116,7 +139,7 @@ def register(bp: Blueprint):
             for item in items:
                 resolved = dict(item)
                 if item["item_type"] == "field":
-                    resolved["value"] = _resolve_field_value(company, item["item_key"])
+                    resolved["value"] = _resolve_field_value(company, item["item_key"], card.get("card_index"))
                 elif item["item_type"] == "media":
                     resolved["url"] = _media_url(company, item["item_key"])
                 resolved_items.append(resolved)

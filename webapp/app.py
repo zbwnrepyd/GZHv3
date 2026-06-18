@@ -11,6 +11,8 @@ from asset_store import (
     list_variants, insert_variant, select_variant, delete_variant,
     update_variant_scores,
 )
+from services.render_assembler import RenderAssembler
+from services.contract_validator import ContractValidator
 from asset_resolver import resolve_company_assets
 from asset_pipeline import (
     collect_all_assets, _download, _variant_path, _render_osm_map,
@@ -1068,6 +1070,46 @@ def delete_company_set(company: str, set_key: str):
         deleted_cards = _del_set(config.DB_PATH_COMPOSITION, company, set_key)
         return jsonify({"status": "ok", "deleted_cards": deleted_cards})
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── API：RenderContract 主出口 (Goal 一) ─────────────────────────
+
+@app.route("/api/render-data/<company>")
+def get_render_data(company: str):
+    """返回指定公司的完整 RenderContract。
+
+    Query params:
+        set  — 套卡版本，默认 v3（可选：v1, v2, v3）
+    """
+    card_set = request.args.get("set", "v3")
+    valid_sets = {"v1", "v2", "v3"}
+    if card_set not in valid_sets:
+        return jsonify({
+            "error": f"Unsupported card set '{card_set}'. Valid: v1, v2, v3"
+        }), 400
+
+    try:
+        assembler = RenderAssembler(
+            research_db_path=config.DB_PATH_RESEARCH,
+            final_db_path=config.DB_PATH_FINAL,
+            assets_db_path=config.DB_PATH_ASSETS,
+            composition_db_path=config.DB_PATH_COMPOSITION,
+        )
+        contract = assembler.assemble(company, card_set)
+
+        # Validate against schema (logs warning on failure, doesn't block)
+        try:
+            ContractValidator.validate(contract)
+        except Exception as val_err:
+            contract.setdefault('warnings', []).append(
+                f"Schema validation warning: {val_err}"
+            )
+
+        return jsonify(contract)
+    except Exception as e:
+        import logging
+        logging.exception("render-data assembly failed for %s", company)
         return jsonify({"error": str(e)}), 500
 
 

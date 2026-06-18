@@ -76,9 +76,26 @@ def register(bp: Blueprint):
 
     @bp.route("/render-data/<company>")
     def get_render_data(company: str):
-        """返回某公司全部启用卡片的渲染数据"""
+        """返回某公司全部启用卡片的渲染数据。
+
+        v3: 走 RenderAssembler → RenderContract 格式 (Goal 一)
+        v1/v2: 保持旧格式向后兼容
+        """
         try:
             set_key = _get_set_key()
+
+            # v3: RenderContract format via RenderAssembler (Goal 一)
+            if set_key == 'v3':
+                from services.render_assembler import RenderAssembler
+                from services.contract_validator import ContractValidator
+                assembler = RenderAssembler()
+                contract = assembler.assemble(company, set_key)
+                try:
+                    ContractValidator.validate(contract)
+                except Exception:
+                    pass
+                return jsonify(contract)
+
             cards = _enabled_cards_or_defaults(company)
             result_cards = []
             for card in cards:

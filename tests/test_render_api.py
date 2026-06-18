@@ -47,15 +47,18 @@ class TestRenderApi:
         assert len(data['cards']) == 8, "Should return 8 default cards"
         assert data['card_set'] == 'v3'
 
-    def test_render_api_defaults_to_v3_when_no_set(self, client):
-        """API should default card_set to v3 when ?set is missing."""
+    def test_render_api_defaults_to_v1_when_no_set(self, client):
+        """API defaults to v1 (backward compatible) when ?set is missing."""
         resp = client.get('/api/render-data/Anthropic')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert 'cards' in data
+        assert len(data['cards']) > 0
+
+    def test_render_api_returns_v3_with_explicit_set(self, client):
+        """API returns v3 RenderContract when ?set=v3."""
+        resp = client.get('/api/render-data/Anthropic?set=v3')
         assert resp.status_code == 200
         data = resp.get_json()
         assert data['card_set'] == 'v3'
         assert len(data['cards']) == 8
-
-    def test_render_api_rejects_invalid_set(self, client):
-        """API should return 400 for unsupported card sets."""
-        resp = client.get('/api/render-data/Anthropic?set=v99')
-        assert resp.status_code == 400

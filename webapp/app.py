@@ -1074,46 +1074,6 @@ def delete_company_set(company: str, set_key: str):
         return jsonify({"error": str(e)}), 500
 
 
-# ── API：RenderContract 主出口 (Goal 一) ─────────────────────────
-
-@app.route("/api/render-data/<company>")
-def get_render_data(company: str):
-    """返回指定公司的完整 RenderContract。
-
-    Query params:
-        set  — 套卡版本，默认 v3（可选：v1, v2, v3）
-    """
-    card_set = request.args.get("set", "v3")
-    valid_sets = {"v1", "v2", "v3"}
-    if card_set not in valid_sets:
-        return jsonify({
-            "error": f"Unsupported card set '{card_set}'. Valid: v1, v2, v3"
-        }), 400
-
-    try:
-        assembler = RenderAssembler(
-            research_db_path=config.DB_PATH_RESEARCH,
-            final_db_path=config.DB_PATH_FINAL,
-            assets_db_path=config.DB_PATH_ASSETS,
-            composition_db_path=config.DB_PATH_COMPOSITION,
-        )
-        contract = assembler.assemble(company, card_set)
-
-        # Validate against schema (logs warning on failure, doesn't block)
-        try:
-            ContractValidator.validate(contract)
-        except Exception as val_err:
-            contract.setdefault('warnings', []).append(
-                f"Schema validation warning: {val_err}"
-            )
-
-        return jsonify(contract)
-    except Exception as e:
-        import logging
-        logging.exception("render-data assembly failed for %s", company)
-        return jsonify({"error": str(e)}), 500
-
-
 # ── API：AI 图片生成 ──────────────────────────────────────────
 
 @app.route("/api/generate-image", methods=["POST"])
@@ -2401,7 +2361,8 @@ def generate_abstract(company: str):
 
 from routes import register_routes
 register_routes(app)
-app.register_blueprint(evidence_lineage_bp)
+if 'evidence_lineage' not in [bp.name for bp in app.blueprints.values()]:
+    app.register_blueprint(evidence_lineage_bp)
 
 
 # ── GZHv2 页面 ──────────────────────────────────────────────────

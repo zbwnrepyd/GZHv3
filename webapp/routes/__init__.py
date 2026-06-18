@@ -6,8 +6,15 @@ render_data_bp = Blueprint("render_data", __name__)
 media_bp = Blueprint("media", __name__)
 evidence_bp = Blueprint("evidence", __name__)
 
+_registered = False
+
 
 def register_routes(app):
+    global _registered
+    if _registered:
+        return
+    _registered = True
+
     from routes.card_config_routes import register as _r1
     from routes.field_routes import register as _r2
     from routes.render_routes import register as _r3

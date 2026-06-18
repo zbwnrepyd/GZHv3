@@ -16,6 +16,14 @@ from evidence_pool import (
     dedupe_evidence, filter_evidence, metric_snippet,
 )
 from gap_detector import detect_gaps, build_gap_queries
+# ── 上下文治理层 (Goal 三) ──
+from services.context_packer import ContextPacker, RawTextNotAllowedError
+from services.document_chunker import chunk as chunk_document
+from services.context_ranker import rank as rank_chunks
+from services.budget_manager import (
+    get_budget, is_governance_enabled, is_legacy_mode,
+    LEGACY_CONTEXT_MODE, DOCUMENT_CHUNKING_ENABLED, CONTEXT_PACKER_ENABLED,
+)
 
 from config import config
 from deepseek_client import call_deepseek, load_prompt
@@ -1193,6 +1201,38 @@ def _build_evidence_pool(raw: dict) -> list:
 
 # ── Step 2: AI 分析 ──────────────────────────────
 
+# ── 上下文治理钩子 (Goal 三) ──
+
+def _validate_context_governance(raw_data: dict, stage: str = "L0") -> None:
+    """Ensure LLM input never receives raw text directly.
+
+    Raises RawTextNotAllowedError if governance is enabled and raw text is detected.
+    No-op if LEGACY_CONTEXT_MODE is explicitly set.
+    """
+    if is_legacy_mode():
+        return
+    if not is_governance_enabled():
+        return
+
+    packed = raw_data.get("_packed_context", {})
+    has_packed = packed and packed.get("chunks")
+
+    # Check for raw text leakage
+    raw_sources = raw_data.get("raw_sources", {})
+    raw_website = raw_sources.get("website", "")
+    raw_tavily = raw_sources.get("tavily_fulltext", "")
+
+    # If raw content exists without packed context being the primary source, that's a violation
+    long_raw = (isinstance(raw_website, str) and len(raw_website) > 5000) or \
+               (isinstance(raw_tavily, str) and len(raw_tavily) > 5000)
+
+    if long_raw and not has_packed:
+        raise RawTextNotAllowedError(
+            f"Raw text detected in {stage} input but RAW_TEXT_IN_LLM_ENABLED is False. "
+            "All input must go through chunk → rank → pack."
+        )
+
+
 def _trim_text(value, limit: int) -> str:
     text = str(value or "")
     if len(text) <= limit:
@@ -1211,7 +1251,13 @@ def _prepare_raw_data_for_llm(raw_data: dict) -> dict:
     - raw_sources.website 全文进入 L0
     - Tavily raw_content 全量进入 L0
     - evidence_pool 前 80 条直接进入 L0
+
+    Goal 三治理: 如果 CONTEXT_PACKER_ENABLED=1 且非 LEGACY_CONTEXT_MODE，
+    强制要求数据经 chunk → rank → pack 处理后进入 LLM。
     """
+    # ── Goal 三：上下文治理验证 ──
+    _validate_context_governance(raw_data, stage="L0")
+
     company_identity = {
         "company_key": raw_data.get("company_key", raw_data.get("company_name", "")),
         "display_name": raw_data.get("display_name", raw_data.get("company_name", "")),

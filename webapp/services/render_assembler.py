@@ -263,18 +263,21 @@ class RenderAssembler:
             )
             row = cur.fetchone()
             if row:
-                # Try to access field_key as column
+                # Try to access field_key as column (old wide table)
                 try:
                     research_value = row[field_key]
                 except (IndexError, KeyError):
-                    # Try research_fields table
-                    cur2 = research_conn.execute(
-                        'SELECT field_value FROM research_fields WHERE company_name=? AND field_key=?',
-                        (company_name, field_key)
-                    )
-                    rf_row = cur2.fetchone()
-                    if rf_row:
-                        research_value = rf_row['field_value']
+                    pass
+
+            # Fallback to research_fields table (normalized)
+            if research_value is None:
+                cur2 = research_conn.execute(
+                    'SELECT field_value FROM research_fields WHERE company_name=? AND field_key=?',
+                    (company_name, field_key)
+                )
+                rf_row = cur2.fetchone()
+                if rf_row:
+                    research_value = rf_row['field_value']
         except Exception:
             pass
 

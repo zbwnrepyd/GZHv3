@@ -670,8 +670,10 @@ def _collect_via_adapters(company_name: str, company_url: str,
     identity_dict = {
         "company_key": identity.company_key,
         "canonical_name": identity.display_name,
+        "display_name": identity.display_name,
         "aliases": identity.aliases,
         "official_domain": identity.website_host,
+        "website_host": identity.website_host,
         "country_hint": "",
     }
     source_plan = build_source_plan(identity_dict, card_fields, manifest)
@@ -1762,7 +1764,10 @@ def _persist_source_documents_from_raw(raw: dict, run_id: str = "") -> list[int]
         return []
 
 
-def _build_document_chunks_for_run(company_key: str, doc_ids: list[int]) -> list[int]:
+def _build_document_chunks_for_run(company_key: str, doc_ids: list[int],
+                                   display_name: str = "",
+                                   website_host: str = "",
+                                   aliases=None) -> list[int]:
     """文档清洗 + 切块 + 打分，写入 document_chunks 表。
 
     返回 chunk_id 列表。
@@ -1788,9 +1793,9 @@ def _build_document_chunks_for_run(company_key: str, doc_ids: list[int]) -> list
 
         chunk_ids = []
         company_identity = {
-            "display_name": company_key,
-            "website_host": "",
-            "aliases": [],
+            "display_name": display_name or company_key,
+            "website_host": website_host or "",
+            "aliases": aliases or [],
         }
 
         # 从 source_documents 获取文档标题/来源信息
@@ -2024,7 +2029,11 @@ def run_pipeline(company_name: str, company_url: str,
     if config.DOCUMENT_CHUNKING_ENABLED:
         _report(progress_callback, "文档治理", "清洗 + 切块 + 打分...", job_id=job_id)
         doc_ids = _persist_source_documents_from_raw(raw, run_id=job_id or "")
-        chunk_ids = _build_document_chunks_for_run(company_key, doc_ids)
+        chunk_ids = _build_document_chunks_for_run(
+            company_key, doc_ids,
+            display_name=raw.get("display_name", ""),
+            website_host=raw.get("website_host", ""),
+            aliases=raw.get("aliases", []))
         if chunk_ids:
             # 预抽取 evidence_spans（必须在 LLM 前完成）
             span_ids = _extract_evidence_spans_from_chunks(
@@ -2118,7 +2127,11 @@ def run_pipeline(company_name: str, company_url: str,
                         # 重建文档治理
                         if config.DOCUMENT_CHUNKING_ENABLED:
                             doc_ids = _persist_source_documents_from_raw(raw, run_id=job_id or "")
-                            _build_document_chunks_for_run(company_key, doc_ids)
+                            _build_document_chunks_for_run(
+                                company_key, doc_ids,
+                                display_name=raw.get("display_name", ""),
+                                website_host=raw.get("website_host", ""),
+                                aliases=raw.get("aliases", []))
                             raw["_packed_context"] = _build_packed_context_for_l0(
                                 raw, company_key, run_id=job_id or "")
 

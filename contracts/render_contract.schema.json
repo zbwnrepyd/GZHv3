@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RenderContract",
+  "type": "object",
+  "required": ["version", "company", "card_set", "cards", "warnings"],
+  "properties": {
+    "version": { "type": "string" },
+    "company": {
+      "type": "object",
+      "required": ["company_id", "name", "slug"],
+      "properties": {
+        "company_id": { "type": "string" },
+        "name": { "type": "string" },
+        "slug": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "card_set": { "type": "string", "enum": ["v1", "v2", "v3"] },
+    "cards": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["card_id", "title", "items", "media", "layout"],
+        "properties": {
+          "card_id": { "type": "string" },
+          "title": { "type": "string" },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["field_key", "value", "status", "confidence", "evidence_count", "source"],
+              "properties": {
+                "field_key": { "type": "string" },
+                "label": { "type": "string" },
+                "value": {},
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "confirmed",
+                    "derived",
+                    "proxy",
+                    "llm_extracted",
+                    "manual_needed",
+                    "unavailable",
+                    "not_applicable"
+                  ]
+                },
+                "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "evidence_count": { "type": "integer", "minimum": 0 },
+                "source": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "media": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["asset_key", "url", "status", "source"],
+              "properties": {
+                "asset_key": { "type": "string" },
+                "url": { "type": ["string", "null"] },
+                "status": {
+                  "type": "string",
+                  "enum": ["ready", "fallback", "manual_needed", "unavailable", "not_applicable"]
+                },
+                "source": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "layout": {
+            "type": "object",
+            "required": ["template_id", "variant"],
+            "properties": {
+              "template_id": { "type": "string" },
+              "variant": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

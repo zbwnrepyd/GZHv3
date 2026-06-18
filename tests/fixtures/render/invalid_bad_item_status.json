@@ -1,37 +1,37 @@
 {
-  "version": "1.0",
+  "version": "1.0.0",
   "company": {
-    "company_id": "anthropic",
-    "name": "Anthropic",
-    "slug": "anthropic"
+    "company_id": "comp-001",
+    "name": "TestCo",
+    "slug": "testco"
   },
-  "card_set": "v3",
+  "card_set": "v2",
   "cards": [
     {
-      "card_id": "v3_card_01",
-      "title": "封面",
+      "card_id": "card-01",
+      "title": "Company Overview",
       "items": [
         {
           "field_key": "company_name",
-          "label": "公司名称",
-          "value": "Anthropic",
+          "label": "Company Name",
+          "value": "TestCo Inc.",
           "status": "unknown",
           "confidence": 0.95,
           "evidence_count": 3,
-          "source": "final"
+          "source": "https://testco.com/about"
         }
       ],
       "media": [
         {
           "asset_key": "logo",
-          "url": "/assets/anthropic/logo.png",
+          "url": "https://testco.com/logo.png",
           "status": "ready",
-          "source": "selected_asset"
+          "source": "https://testco.com"
         }
       ],
       "layout": {
-        "template_id": "v3_default",
-        "variant": "wide"
+        "template_id": "tpl-default",
+        "variant": "standard"
       }
     }
   ],

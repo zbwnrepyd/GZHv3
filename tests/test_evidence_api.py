@@ -1,17 +1,24 @@
 """Evidence API integration tests — PR8 (Goal 二)."""
-import os, sys, json, sqlite3
+
+import os
+import sys
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'webapp'))
+# Match import style of other test modules to avoid dual module instantiation
+ROOT = os.path.dirname(os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(ROOT, "webapp"))
 
-from webapp.app import app as flask_app
+
+@pytest.fixture(scope='module')
+def app():
+    import app as _app_module
+    _app_module.app.config['TESTING'] = True
+    return _app_module.app
 
 
 @pytest.fixture
-def client():
-    flask_app.config['TESTING'] = True
-    with flask_app.test_client() as c:
+def client(app):
+    with app.test_client() as c:
         yield c
 
 

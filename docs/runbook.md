@@ -38,6 +38,17 @@ python3 db/migrate.py db/research_db.sqlite --only 030_entity_table_indexes.sql
 # 噪音与上下文治理（031-032）
 python3 db/migrate.py db/research_db.sqlite --only 031_document_chunks.sql
 python3 db/migrate.py db/research_db.sqlite --only 032_packed_context_logs.sql
+# 导出审计（033）
+python3 db/migrate.py db/research_db.sqlite --only 033_export_runs.sql
+# Evidence Pipeline v2（040-044，Goal 二）
+python3 db/migrate.py db/research_db.sqlite --only 040_evidence_source_documents.sql
+python3 db/migrate.py db/research_db.sqlite --only 041_evidence_items_v2.sql
+python3 db/migrate.py db/research_db.sqlite --only 042_field_candidates_v2.sql
+python3 db/migrate.py db/research_db.sqlite --only 043_candidate_evidence_map.sql
+python3 db/migrate.py db/research_db.sqlite --only 044_final_field_values.sql
+# Context Governance v2（045-046，Goal 三）
+python3 db/migrate.py db/research_db.sqlite --only 045_document_chunks_v2.sql
+python3 db/migrate.py db/research_db.sqlite --only 046_packed_context_logs_v2.sql
 # 历史数据迁移（可选）:
 # PYTHONPATH=webapp python3 webapp/db/migrate_entities.py db/research_db.sqlite
 ```
@@ -323,6 +334,19 @@ curl "http://127.0.0.1:5050/api/final/export/Anthropic?set=v3&format=pdf" | pyth
 curl "http://127.0.0.1:5050/api/final/export/Anthropic?set=v3&format=notion" | python3 -m json.tool
 ```
 `--params` 和 `--params-file` 接受卡片参数 JSON（字号/颜色/间距覆盖），参数通过 base64 编码注入到卡片页面 URL。
+
+### 生产稳定性检查（Goal 四）
+
+```bash
+# Card 内容覆盖率（需 Flask 运行中）
+python3 scripts/card_content_coverage_check.py --company Anthropic --set v3
+
+# Asset 覆盖率
+python3 scripts/asset_coverage_check.py --company Anthropic --set v3
+
+# 多公司导出回归（需 Flask + Puppeteer）
+python3 scripts/export_regression.py --companies Anthropic OpenAI --set v3
+```
 
 Asset collection and infographic generation:
 

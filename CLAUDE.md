@@ -12,15 +12,18 @@
 prompts/        — LLM Prompt文件（layer0-3 + layer3-group-a/b/c 三组枚举提取）
 webapp/         — Flask编辑后台 + 研究流水线（app.py入口）
   research/       — 证据层：document_store, evidence_extractor, field_resolver, field_status
-    context/      — 噪音与上下文治理：document_cleaner, document_chunker, evidence_ranker, context_packer, token_budget
+    context/      — 噪音与上下文治理（旧模块）：document_cleaner, document_chunker, evidence_ranker, context_packer, token_budget
   research_agents/ — 多Agent系统：11 Agent + forum/ + resolvers/ + storage/ + orchestrator
   repositories/  — 数据访问：field_repo, entity_repo（10张规范化实体表CRUD）
   routes/        — API路由：field, card_config, render, media, evidence
-  db/            — 迁移脚本：migrate.py + migrate_entities.py（宽表→实体表）
+  services/      — 重构新增服务：contract_validator, render_assembler, candidate_resolver, evidence_service, context_packer, document_chunker, context_ranker, budget_manager
+  db/            — 迁移脚本：migrate.py, evidence_migrations.py + migrate_entities.py（宽表→实体表）
 image-studio/   — 图片定稿台（三栏），通过 iframe 嵌入定稿台
 canvas/         — HTML/CSS卡片制作台、单卡页面、Puppeteer截图脚本
 db/             — SQLite建表SQL和数据库文件
-tests/          — unittest 回归测试
+contracts/      — RenderContract schema + asset_keys.json + card_sets/v3.json
+scripts/        — 覆盖检查 + 导出回归脚本
+tests/          — pytest 回归测试（636 passed）
 ```
 
 ## 日常操作
@@ -51,10 +54,15 @@ curl http://127.0.0.1:5050/api/research/status/<job_id>
 
 ### 验证
 ```bash
-python3 -m unittest discover -s tests -v
+pytest tests/ -v
 python3 -m py_compile webapp/*.py
 python3 db/migrate.py --help
 node canvas/screenshot.js --help
+
+# 生产稳定性检查（Goal 四）
+python3 scripts/card_content_coverage_check.py --company Anthropic --set v3
+python3 scripts/asset_coverage_check.py --company Anthropic --set v3
+python3 scripts/export_regression.py --companies Anthropic --set v3
 ```
 
 ### 初始化数据库
@@ -111,11 +119,14 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 研究台公司库定稿进度优先读取 `final_fields` 的 confirmed/total 字段数；旧 `final_content` 卡片数仅作兼容回退
 - 研究台要展示 Tavily/GitHub/YouTube/官网抓取的链路状态与数量；公司库点击一条只展开该公司研究信息，点另一条时其他行折叠
 - `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集
-- `/api/evidence/<company_key>/<field_key>` 返回字段证据链（含来源URL/标题/引用片段/可信度）；前端暂未接入，但API可用
+- Evidence API（Goal 二新增）：`/api/evidence/company/<company>`、`/api/evidence/field/<company>/<field_key>`、`/api/evidence/candidate/<candidate_id>`；旧 `/api/evidence/<company_key>/<field_key>` 仍可用
+- RenderContract 主出口（Goal 一）：`GET /api/render-data/<company>?set=v3` 返回 `contracts/render_contract.schema.json` 格式的 8 卡结构，由 `webapp/services/render_assembler.py` 组装、`webapp/services/contract_validator.py` 校验
+- `LEGACY_CONTEXT_MODE=1` 显式开关绕过 chunk→rank→pack 治理（仅调试用，默认 0）
 
 ## 参考
 - 新人入口：`docs/project-guide.md`
 - 架构说明：`docs/architecture.md`
+- 重构 Spec：`docs/refactor/master_refactor_spec.md`（Goal 一~四 12 PR 全量重构方案）
 - 评分体系：`docs/scoring-system.md`
 - 卡片规范：`docs/card-spec.md`
 - 运行手册：`docs/runbook.md`

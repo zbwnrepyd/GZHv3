@@ -69,3 +69,43 @@ def test_render_contract_schema_invalid_media_status():
     contract = _load_fixture('invalid_bad_media_status.json')
     errors = list(validator.iter_errors(contract))
     assert len(errors) > 0, "Expected validation errors for invalid media status"
+
+
+# --- ContractValidator integration tests (PR4) ---
+
+def test_contract_validator_accepts_valid_contract():
+    """ContractValidator.validate() returns True for valid contract."""
+    from webapp.services.contract_validator import ContractValidator
+    contract = _load_fixture('valid_render_contract.json')
+    result = ContractValidator.validate(contract)
+    assert result is True
+
+
+def test_contract_validator_rejects_missing_cards():
+    """ContractValidator.validate() raises ValidationError for missing cards."""
+    import pytest as pytest_mod
+    from webapp.services.contract_validator import ContractValidator
+    from jsonschema import ValidationError
+    contract = _load_fixture('invalid_missing_cards.json')
+    with pytest_mod.raises(ValidationError):
+        ContractValidator.validate(contract)
+
+
+def test_contract_validator_rejects_invalid_item_status():
+    """ContractValidator.validate() raises ValidationError for bad item status."""
+    import pytest as pytest_mod
+    from webapp.services.contract_validator import ContractValidator
+    from jsonschema import ValidationError
+    contract = _load_fixture('invalid_bad_item_status.json')
+    with pytest_mod.raises(ValidationError):
+        ContractValidator.validate(contract)
+
+
+def test_contract_validator_rejects_invalid_media_status():
+    """ContractValidator.validate() raises ValidationError for bad media status."""
+    import pytest as pytest_mod
+    from webapp.services.contract_validator import ContractValidator
+    from jsonschema import ValidationError
+    contract = _load_fixture('invalid_bad_media_status.json')
+    with pytest_mod.raises(ValidationError):
+        ContractValidator.validate(contract)

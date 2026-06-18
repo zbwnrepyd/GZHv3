@@ -10,7 +10,9 @@ Output: { ok, company, card_set, summary, failures }
 from __future__ import annotations
 import argparse, json, os, sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'webapp'))
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, '..', 'webapp'))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, '..'))
 
 from webapp.services.render_assembler import RenderAssembler
 

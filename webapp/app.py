@@ -13,6 +13,7 @@ from asset_store import (
 )
 from services.render_assembler import RenderAssembler
 from services.contract_validator import ContractValidator
+from routes.evidence import evidence_lineage_bp
 from asset_resolver import resolve_company_assets
 from asset_pipeline import (
     collect_all_assets, _download, _variant_path, _render_osm_map,
@@ -2400,6 +2401,7 @@ def generate_abstract(company: str):
 
 from routes import register_routes
 register_routes(app)
+app.register_blueprint(evidence_lineage_bp)
 
 
 # ── GZHv2 页面 ──────────────────────────────────────────────────

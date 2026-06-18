@@ -1,0 +1,15 @@
+{
+  "logo": { "type": "image", "required": true },
+  "website_screenshot": { "type": "image", "required": false },
+  "product_main": { "type": "image", "required": false },
+  "founder_photo": { "type": "image", "required": false },
+  "customer_logos": {
+    "type": "composite_image",
+    "required": false,
+    "fallback": "customer_name_list_text_card"
+  },
+  "chart_competitive": { "type": "chart", "required": false },
+  "chart_ecosystem": { "type": "chart", "required": false },
+  "flywheel": { "type": "chart", "required": false },
+  "timeline": { "type": "chart", "required": false }
+}

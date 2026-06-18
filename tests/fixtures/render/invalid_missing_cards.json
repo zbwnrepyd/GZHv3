@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "company": {
+    "company_id": "anthropic",
+    "name": "Anthropic",
+    "slug": "anthropic"
+  },
+  "card_set": "v3",
+  "warnings": []
+}

@@ -47,6 +47,11 @@
                   ]
                 },
                 "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                "confidence_level": {
+                  "type": "string",
+                  "enum": ["verified", "estimated", "benchmark", "unavailable"],
+                  "description": "字段置信度分级，反映数据获取方式的可信度。verified=官方/权威来源, estimated=代理推算, benchmark=行业基准, unavailable=未公开"
+                },
                 "evidence_count": { "type": "integer", "minimum": 0 },
                 "source": { "type": "string" }
               },

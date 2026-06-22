@@ -8,9 +8,15 @@ Never raises exception on missing data.
 
 import json
 import os
+import sys
 import sqlite3
 from pathlib import Path
 from typing import Optional
+
+# Allow importing from research/ sub-package
+_WEBAPP = Path(__file__).resolve().parent.parent
+if str(_WEBAPP) not in sys.path:
+    sys.path.insert(0, str(_WEBAPP))
 
 # Private/operational metrics that default to 'unavailable' when no data exists
 _PRIVATE_METRIC_FIELDS = {
@@ -19,6 +25,46 @@ _PRIVATE_METRIC_FIELDS = {
     'paying_users', 'active_users', 'registered_users', 'mau',
     'company_revenue', 'company_profit', 'revenue_metrics', 'growth_metrics',
 }
+
+
+_PLACEHOLDER_VALUES = {'', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{}'}
+
+
+# Status → confidence_level mapping
+_STATUS_TO_CONFIDENCE_LEVEL = {
+    "confirmed": "verified",
+    "derived": "estimated",
+    "proxy": "estimated",
+    "industry_avg": "benchmark",
+    "llm_extracted": "estimated",
+    "llm_located": "estimated",
+    "manual_needed": "unavailable",
+    "unavailable": "unavailable",
+    "not_applicable": "unavailable",
+    "conflict": "estimated",
+    "draft": "unavailable",
+    "hidden": "unavailable",
+}
+
+
+def _map_status_to_confidence_level(status: str, is_private: bool = False) -> str:
+    """Map internal resolution status to user-facing confidence_level.
+
+    Private metrics with no real data default to benchmark/unavailable.
+    """
+    if not status:
+        return "unavailable"
+    mapped = _STATUS_TO_CONFIDENCE_LEVEL.get(status, "unavailable")
+    # Private metric industry_avg → benchmark (correct)
+    # Private metric llm_extracted with no evidence → estimated (could be wrong, but ok for UX)
+    return mapped
+
+
+def _is_usable_value(value) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    return text not in _PLACEHOLDER_VALUES
 
 
 def _slugify(name: str) -> str:
@@ -226,7 +272,7 @@ class RenderAssembler:
         """
         is_private = field_key in _PRIVATE_METRIC_FIELDS
 
-        # 1. Try final_db
+        # 1. Try final_db final_fields
         final_value = None
         final_status = None
         try:
@@ -236,24 +282,56 @@ class RenderAssembler:
                 (company_name, field_key)
             )
             row = cur.fetchone()
-            if row and row['final_value'] is not None and row['final_value'] != '':
+            if row and _is_usable_value(row['final_value']):
                 final_value = row['final_value']
                 final_status = row['status'] or 'draft'
         except Exception:
             pass
 
         if final_value is not None and final_status != 'draft':
+            resolved_status = final_status if final_status in _VALID_FIELD_STATUSES else 'derived'
             return {
                 'field_key': field_key,
                 'label': field_key.replace('_', ' ').title(),
                 'value': final_value,
-                'status': final_status if final_status in _VALID_FIELD_STATUSES else 'derived',
+                'status': resolved_status,
                 'confidence': 0.9,
+                'confidence_level': _map_status_to_confidence_level(resolved_status, is_private),
                 'evidence_count': 1,
                 'source': 'final',
             }
 
-        # 2. Try research_db
+        # 2. Try v3 read model in research_db.final_card_values
+        final_card_value = self._resolve_final_card_value(company_name, field_key)
+        if final_card_value:
+            status = final_card_value['status']
+            return {
+                'field_key': field_key,
+                'label': field_key.replace('_', ' ').title(),
+                'value': final_card_value['value'],
+                'status': status,
+                'confidence': final_card_value['confidence'],
+                'confidence_level': _map_status_to_confidence_level(status, is_private),
+                'evidence_count': 0,
+                'source': 'final_card_values',
+            }
+
+        # 3. Try normalized research_fields before legacy wide table.
+        research_field = self._resolve_research_field(company_name, field_key)
+        if research_field:
+            status = research_field['status']
+            return {
+                'field_key': field_key,
+                'label': field_key.replace('_', ' ').title(),
+                'value': research_field['value'],
+                'status': status,
+                'confidence': 0.5,
+                'confidence_level': _map_status_to_confidence_level(status, is_private),
+                'evidence_count': 0,
+                'source': 'research_fields',
+            }
+
+        # 4. Legacy wide research table fallback.
         research_value = None
         try:
             research_conn = self._get_research_conn()
@@ -268,26 +346,17 @@ class RenderAssembler:
                     research_value = row[field_key]
                 except (IndexError, KeyError):
                     pass
-
-            # Fallback to research_fields table (normalized)
-            if research_value is None:
-                cur2 = research_conn.execute(
-                    'SELECT field_value FROM research_fields WHERE company_name=? AND field_key=?',
-                    (company_name, field_key)
-                )
-                rf_row = cur2.fetchone()
-                if rf_row:
-                    research_value = rf_row['field_value']
         except Exception:
             pass
 
-        if research_value is not None and str(research_value).strip():
+        if _is_usable_value(research_value):
             return {
                 'field_key': field_key,
                 'label': field_key.replace('_', ' ').title(),
                 'value': str(research_value),
                 'status': 'llm_extracted',
                 'confidence': 0.5,
+                'confidence_level': 'estimated',
                 'evidence_count': 0,
                 'source': 'research',
             }
@@ -295,8 +364,10 @@ class RenderAssembler:
         # 3. Missing — choose status based on field type
         if is_private:
             status = 'unavailable'
+            conf_level = 'unavailable'
         else:
             status = 'manual_needed'
+            conf_level = 'unavailable'
 
         return {
             'field_key': field_key,
@@ -304,9 +375,138 @@ class RenderAssembler:
             'value': None,
             'status': status,
             'confidence': 0.0,
+            'confidence_level': conf_level,
             'evidence_count': 0,
             'source': 'none',
         }
+
+    def _table_columns(self, conn: sqlite3.Connection, table: str) -> set[str]:
+        try:
+            return {row['name'] for row in conn.execute(f'PRAGMA table_info({table})').fetchall()}
+        except Exception:
+            return set()
+
+    def _company_key_candidates(self, company_name: str) -> list[str]:
+        candidates = [_slugify(company_name), company_name.lower()]
+        try:
+            conn = self._get_research_conn()
+            research_cols = self._table_columns(conn, 'research')
+            if 'company_key' in research_cols:
+                row = conn.execute(
+                    """
+                    SELECT company_key FROM research
+                    WHERE company_name=? AND company_key IS NOT NULL AND TRIM(company_key)!=''
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (company_name,),
+                ).fetchone()
+                if row and row['company_key']:
+                    candidates.insert(0, row['company_key'])
+            fields_cols = self._table_columns(conn, 'research_fields')
+            if 'company_key' in fields_cols:
+                row = conn.execute(
+                    """
+                    SELECT company_key FROM research_fields
+                    WHERE company_name=? AND company_key IS NOT NULL AND TRIM(company_key)!=''
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (company_name,),
+                ).fetchone()
+                if row and row['company_key']:
+                    candidates.insert(0, row['company_key'])
+        except Exception:
+            pass
+        seen = set()
+        unique = []
+        for candidate in candidates:
+            key = str(candidate or '').strip()
+            if key and key not in seen:
+                unique.append(key)
+                seen.add(key)
+        return unique
+
+    def _resolve_final_card_value(self, company_name: str, field_key: str) -> Optional[dict]:
+        try:
+            conn = self._get_research_conn()
+            cols = self._table_columns(conn, 'final_card_values')
+            required = {'company_key', 'field_key', 'final_value'}
+            if not required.issubset(cols):
+                return None
+            company_keys = self._company_key_candidates(company_name)
+            if not company_keys:
+                return None
+            placeholders = ','.join(['?'] * len(company_keys))
+            cur = conn.execute(
+                f"""
+                SELECT final_value, status, confidence, resolution_status
+                FROM final_card_values
+                WHERE company_key IN ({placeholders}) AND field_key=?
+                  AND final_value IS NOT NULL
+                  AND TRIM(CAST(final_value AS TEXT)) NOT IN ('', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{{}}')
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                [*company_keys, field_key],
+            )
+            row = cur.fetchone()
+            if not row or not _is_usable_value(row['final_value']):
+                return None
+            status = row['status'] or row['resolution_status'] or 'derived'
+            if status not in _VALID_FIELD_STATUSES:
+                status = row['resolution_status'] or 'derived'
+            if status not in _VALID_FIELD_STATUSES:
+                status = 'derived'
+            confidence_raw = str(row['confidence'] or '').strip().lower()
+            confidence = {'high': 0.9, 'medium': 0.7, 'low': 0.45}.get(confidence_raw, 0.7)
+            return {
+                'value': str(row['final_value']),
+                'status': status,
+                'confidence': confidence,
+            }
+        except Exception:
+            return None
+
+    def _resolve_research_field(self, company_name: str, field_key: str) -> Optional[dict]:
+        try:
+            conn = self._get_research_conn()
+            cols = self._table_columns(conn, 'research_fields')
+            required = {'company_name', 'version', 'field_key', 'field_value'}
+            if not required.issubset(cols):
+                return None
+            status_col = 'resolution_status' if 'resolution_status' in cols else "''"
+            company_keys = self._company_key_candidates(company_name) if 'company_key' in cols else []
+            clauses = ['company_name=?']
+            params = [company_name]
+            if company_keys:
+                placeholders = ','.join(['?'] * len(company_keys))
+                clauses.append(f'company_key IN ({placeholders})')
+                params.extend(company_keys)
+            cur = conn.execute(
+                f"""
+                SELECT field_value, {status_col} AS status, version
+                FROM research_fields
+                WHERE ({' OR '.join(clauses)}) AND field_key=?
+                  AND field_value IS NOT NULL
+                  AND TRIM(CAST(field_value AS TEXT)) NOT IN ('', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{{}}')
+                ORDER BY
+                  CASE version WHEN 'spread' THEN 0 WHEN 'business' THEN 1 WHEN 'standard' THEN 2 ELSE 3 END,
+                  id DESC
+                LIMIT 1
+                """,
+                [*params, field_key],
+            )
+            row = cur.fetchone()
+            if not row or not _is_usable_value(row['field_value']):
+                return None
+            status = row['status'] or 'llm_extracted'
+            if status not in _VALID_FIELD_STATUSES:
+                status = 'llm_extracted'
+            return {
+                'value': str(row['field_value']),
+                'status': status,
+            }
+        except Exception:
+            return None
 
     def _resolve_media(self, company_name: str, asset_key: str) -> dict:
         """Resolve a media asset from assets_db.

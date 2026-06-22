@@ -333,11 +333,16 @@ fields:
     sub_budget: competition_context
   competitive_position:
     category: A
-    resolution_type: official_fact
+    resolution_type: structured_extraction
     if_missing: unavailable
-    context_budget_tokens: 800
-    max_evidence_chunks: 2
-    sub_budget: competition_context
+    source_module: competitive_matrix
+
+  competitors_structured:
+    category: A
+    resolution_type: structured_extraction
+    if_missing: unavailable
+    type: json_text
+    source_module: competitive_matrix
   competitive_advantages:
     category: A
     resolution_type: official_fact
@@ -404,6 +409,20 @@ fields:
     if_missing: unavailable
     context_budget_tokens: 1600
     max_evidence_chunks: 4
+    sub_budget: market_context
+  market_track:
+    category: A
+    resolution_type: official_fact
+    if_missing: manual_needed
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
+    sub_budget: market_context
+  market_subtrack:
+    category: A
+    resolution_type: official_fact
+    if_missing: manual_needed
+    context_budget_tokens: 800
+    max_evidence_chunks: 3
     sub_budget: market_context
   market_landscape_summary:
     category: A
@@ -530,10 +549,6 @@ fields:
     context_budget_tokens: 1600
     max_evidence_chunks: 5
     sub_budget: market_context
-    required_context:
-      - region
-      - year
-      - source
   market_size_currency:
     category: C
     resolution_type: market_model
@@ -739,6 +754,34 @@ fields:
     category: B
     resolution_type: derived
     if_missing: derived
+
+  # ── L2 商业模式画布（结构化 JSON）──
+  business_canvas:
+    category: A
+    resolution_type: structured_extraction
+    if_missing: unavailable
+    type: json_text
+    source_module: business_canvas
+
+  moat_dimensions:
+    category: A
+    resolution_type: structured_extraction
+    if_missing: unavailable
+    type: json_text
+    source_module: business_canvas
+
+  growth_loops:
+    category: A
+    resolution_type: structured_extraction
+    if_missing: unavailable
+    type: json_text
+    source_module: business_canvas
+
+  unit_economics:
+    category: D
+    resolution_type: private_metric
+    if_missing: unavailable
+    source_module: business_canvas
 
   # ── 其余：统一按 LLM 提取处理 ──
   _default:

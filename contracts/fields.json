@@ -1,6 +1,23 @@
 {
   "version": "v3",
   "description": "字段契约 — 定义系统中所有可用字段的类型、分组和约束。字段不天然属于任何卡片。支持 v1/v2/v3 三套卡。",
+  "confidence_level": {
+    "description": "字段置信度分级（独立于 resolution_status），反映数据获取方式的可信度",
+    "values": {
+      "verified": "从公司官方/知名媒体/权威报告直接提取",
+      "estimated": "从代理指标推算或公式计算",
+      "benchmark": "使用行业均值填充（不代表公司披露）",
+      "unavailable": "未公开，不强行造数"
+    }
+  },
+  "acquisition_tiers": {
+    "description": "字段按可获取难度分三类，每类采用不同采集策略",
+    "values": {
+      "1": {"label": "公开可采集", "strategy": "web_search + LLM提取：搜索报告摘要/公司自述/投资机构博客", "fields": "C类market_model + A/B类official_fact/derived"},
+      "2": {"label": "代理指标推算", "strategy": "proxy metrics：SimilarWeb/GitHub/ProductHunt等多源代理信号→估算范围", "fields": "D类用户/MAU字段（mau, active_users等）"},
+      "3": {"label": "估算/行业基准", "strategy": "estimation formulas + industry benchmarks：公式推算+行业均值兜底", "fields": "D类LTV/CAC/留存字段（cac, ltv, retention_rate等）"}
+    }
+  },
   "groups": [
     {
       "group_key": "basic",
@@ -131,9 +148,11 @@
       "group_key": "market",
       "group_label": "市场规模（v3）",
       "fields": [
-        {"field_key": "market_landscape_summary", "field_label": "赛道市场格局一句话", "type": "long_text", "required": true},
+        {"field_key": "market_track", "field_label": "赛道", "type": "text", "required": true},
+        {"field_key": "market_subtrack", "field_label": "细分赛道", "type": "text", "required": false},
+        {"field_key": "market_landscape_summary", "field_label": "赛道市场格局", "type": "long_text", "required": true},
         {"field_key": "market_landscape_top_players", "field_label": "Top玩家列表", "type": "json_text", "required": false},
-        {"field_key": "market_size_value", "field_label": "市场规模数值", "type": "number", "required": false},
+        {"field_key": "market_size_value", "field_label": "赛道市场规模", "type": "number", "required": false},
         {"field_key": "market_size_currency", "field_label": "市场规模币种", "type": "text", "required": false},
         {"field_key": "market_size_year", "field_label": "市场规模口径年份", "type": "number", "required": false},
         {"field_key": "tam_value", "field_label": "TAM 数值", "type": "number", "required": false},

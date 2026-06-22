@@ -52,4 +52,46 @@ Layer 0 清洗数据 + Layer 1 横纵分析结果。
 用 100 字以内描述：[A] → [B] → [C] → 正向强化 [A]
 
 ## 输出格式
-输出 JSON，每个字符串字段 100-300 字。评分字段用数字。数据类必须标注来源。
+
+输出严格的 JSON，不要包含 markdown 代码块标记，不要添加额外解释：
+
+{
+  "revenue_model": {
+    "primary": "subscription|usage_based|enterprise_contract|advertising|marketplace|freemium|other",
+    "secondary": [],
+    "pricing_public": true,
+    "evidence_snippets": ["原文引用"]
+  },
+  "unit_economics": {
+    "has_ltv_cac_data": false,
+    "ltv_estimate": "具体数值或 null",
+    "cac_estimate": "具体数值或 null",
+    "payback_period_months": null,
+    "gross_margin_estimate": null,
+    "disclaimer": "如果数据不可得，请说明原因",
+    "evidence_snippets": ["引用或说明"]
+  },
+  "growth_loops": [
+    {
+      "loop_type": "viral|content|sales|product_led|partnership|paid_acquisition",
+      "description": "≤80字符",
+      "strength": "strong|moderate|weak|none",
+      "evidence_snippets": ["原文引用"]
+    }
+  ],
+  "moat_dimensions": [
+    {
+      "dimension": "network_effects|data_moat|switching_cost|brand|scale_economy|tech_complexity|regulatory|counter_positioning",
+      "strength": "strong|moderate|weak|none",
+      "description": "≤100字符",
+      "evidence_snippets": ["原文引用"]
+    }
+  ],
+  "business_model_summary": "≤150字符的一句话总结"
+}
+
+要求：
+- moat_dimensions 分析至少 4 个维度
+- growth_loops 至少 1 个
+- unit_economics 如果数据不可得，填 null 并在 disclaimer 中说明原因
+- 所有 evidence_snippets 直接引用原文，不得编造

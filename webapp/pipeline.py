@@ -2097,6 +2097,10 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
         raise L0GateError(
             f"L0 输出不是 JSON 对象 (got {type(l0_parsed).__name__})，中止 {company_name} 研究"
         )
+    # DEBUG: log actual L0 keys for gate calibration
+    _l0_keys = sorted(l0_parsed.keys())
+    print(f"[L0Gate] L0 output keys ({len(_l0_keys)}): {_l0_keys}", flush=True)
+
     l0_valid, l0_errors = validate_l0_output(l0_parsed)
     if not l0_valid:
         raise L0GateError(

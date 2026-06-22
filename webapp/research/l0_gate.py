@@ -1,28 +1,15 @@
 """L0 质量门控 — 校验 L0 LLM 输出完整性，不通过则阻断下游
 
-L0 的实际输出结构（来自 prompts/layer0-cleaner.md）：
-  - company_identity: {company_key, display_name}
-  - evidence_pool: [{source, title, url, content, ...}]
-  - source_audit: {source_type: count}
-  - source_warnings: [...]
-  - raw_sources: {tavily, github, youtube, official_site}
-
-门控检查 company_identity 和 evidence_pool 两个关键结构，而非具体字段值。
-具体字段（company_name, founded_date等）由 L3-A 负责提取。
+L0 prompt 包含两种输出格式（结构化和维度化），LLM 可能遵循任一种。
+门控只做最小校验：输出是合法 JSON、非空、有足够内容。
+不检查具体 key —— L3-A 负责字段级提取和质量判断。
 """
 
 from __future__ import annotations
 import json
 
-L0_REQUIRED_KEYS = [
-    "company_identity",  # {company_key, display_name} — 身份识别基础
-    "evidence_pool",     # [{source, title, url, content, ...}] — 下游分析数据源
-]
-
 L0_MIN_CONTENT_LENGTH = 500  # L0 输出通常 2000+ chars
-
-# company_identity 内必填的子字段
-L0_IDENTITY_REQUIRED = ["company_key", "display_name"]
+L0_MIN_TOP_KEYS = 3          # 至少有 3 个顶层 key（无论叫什么）
 
 
 class L0GateError(RuntimeError):
@@ -33,38 +20,38 @@ class L0GateError(RuntimeError):
 def validate_l0_output(l0_result: dict) -> tuple[bool, list[str]]:
     """校验 L0 输出是否具备下游所需的最小信息。
 
+    不做字段名检查（L0 输出格式因 prompt 版本而异），
+    只验证：1) 非空 dict  2) 有足够 key  3) 整体长度够
+
     Returns:
         (is_valid, errors): is_valid=False 时应中止流水线
     """
     errors = []
 
-    # 检查顶层必需 key
-    for key in L0_REQUIRED_KEYS:
-        value = l0_result.get(key)
-        if value is None:
-            errors.append(f"L0 missing required key: {key}")
-            continue
-        # evidence_pool 必须是非空列表
-        if key == "evidence_pool":
-            if not isinstance(value, list) or len(value) == 0:
-                errors.append(f"L0 evidence_pool is empty or not a list")
+    if not isinstance(l0_result, dict):
+        errors.append("L0 output is not a dict")
+        return False, errors
 
-    # 检查 company_identity 内部字段
-    identity = l0_result.get("company_identity")
-    if isinstance(identity, dict):
-        for field in L0_IDENTITY_REQUIRED:
-            val = identity.get(field)
-            if val is None or (isinstance(val, str) and not val.strip()):
-                errors.append(f"L0 company_identity missing: {field}")
-    elif identity is not None:
-        errors.append("L0 company_identity is not a dict")
+    if len(l0_result) < L0_MIN_TOP_KEYS:
+        errors.append(
+            f"L0 output has only {len(l0_result)} top-level keys "
+            f"(min: {L0_MIN_TOP_KEYS})"
+        )
 
-    # 整体输出长度
     total_text = json.dumps(l0_result, ensure_ascii=False)
     if len(total_text) < L0_MIN_CONTENT_LENGTH:
         errors.append(
             f"L0 output too short: {len(total_text)} chars "
             f"(min: {L0_MIN_CONTENT_LENGTH})"
         )
+
+    # 至少有一个 key 的值是非空（不是 "" null [] {}）
+    has_content = False
+    for key, val in l0_result.items():
+        if val and val not in ("", "暂缺", [], {}):
+            has_content = True
+            break
+    if not has_content:
+        errors.append("L0 output has no meaningful content (all values empty)")
 
     return len(errors) == 0, errors

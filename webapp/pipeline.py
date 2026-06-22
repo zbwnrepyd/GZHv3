@@ -2097,10 +2097,6 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
         raise L0GateError(
             f"L0 输出不是 JSON 对象 (got {type(l0_parsed).__name__})，中止 {company_name} 研究"
         )
-    # DEBUG: log actual L0 keys for gate calibration
-    _l0_keys = sorted(l0_parsed.keys())
-    print(f"[L0Gate] L0 output keys ({len(_l0_keys)}): {_l0_keys}", flush=True)
-
     l0_valid, l0_errors = validate_l0_output(l0_parsed)
     if not l0_valid:
         raise L0GateError(
@@ -3017,6 +3013,76 @@ def run_pipeline(company_name: str, company_url: str,
             # P2: ForumModerator 字段质量检查
             _run_forum_moderation(
                 config.DB_PATH_RESEARCH, company_name, version, field_rows)
+
+    # ── L1/L2 结构化字段写入（非阻断）──
+    from repositories.field_repo import upsert_final_field
+    try:
+        if competitive_matrix:
+            import json as _json
+            cm_json = _json.dumps(competitive_matrix.model_dump(),
+                                  ensure_ascii=False)
+            all_extracted_fields["competitors_structured"] = cm_json
+            all_extracted_fields["competitive_position"] = \
+                competitive_matrix.target_company_position
+            # Persist to research_fields for render contract consumption
+            _field_rows = [{
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "competitors_structured",
+                "field_value": cm_json, "value_type": "json_text",
+                "resolution_status": "llm_extracted",
+            }, {
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "competitive_position",
+                "field_value": competitive_matrix.target_company_position,
+                "value_type": "text", "resolution_status": "llm_extracted",
+            }]
+            insert_research_fields_batch(config.DB_PATH_RESEARCH, _field_rows)
+    except Exception:
+        pass
+
+    try:
+        if business_canvas:
+            import json as _json
+            bc_json = _json.dumps(business_canvas.model_dump(),
+                                  ensure_ascii=False)
+            all_extracted_fields["business_canvas"] = bc_json
+            # Extract individual fields
+            moat_json = _json.dumps(
+                [m.model_dump() for m in business_canvas.moat_dimensions],
+                ensure_ascii=False)
+            loops_json = _json.dumps(
+                [g.model_dump() for g in business_canvas.growth_loops],
+                ensure_ascii=False)
+            all_extracted_fields["moat_dimensions"] = moat_json
+            all_extracted_fields["growth_loops"] = loops_json
+            all_extracted_fields["unit_economics"] = _json.dumps(
+                business_canvas.unit_economics.model_dump(), ensure_ascii=False)
+            _field_rows = [{
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "business_canvas",
+                "field_value": bc_json, "value_type": "json_text",
+                "resolution_status": "llm_extracted",
+            }, {
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "moat_dimensions",
+                "field_value": moat_json, "value_type": "json_text",
+                "resolution_status": "llm_extracted",
+            }, {
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "growth_loops",
+                "field_value": loops_json, "value_type": "json_text",
+                "resolution_status": "llm_extracted",
+            }, {
+                "company_name": company_name, "company_key": company_key,
+                "version": "standard", "field_key": "unit_economics",
+                "field_value": _json.dumps(
+                    business_canvas.unit_economics.model_dump(),
+                    ensure_ascii=False),
+                "value_type": "json_text", "resolution_status": "llm_extracted",
+            }]
+            insert_research_fields_batch(config.DB_PATH_RESEARCH, _field_rows)
+    except Exception:
+        pass
 
     # ── TimeSeriesSnapshotter: 字段快照（非阻断）──
     from research.time_series import TimeSeriesSnapshotter

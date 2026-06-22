@@ -1,9 +1,11 @@
 """研究流水线：4路并行采集 → 4层LLM分析 → 写库"""
 from __future__ import annotations
 import copy
-import json, os, re, time
+import json, os, re, sys, time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
+import subprocess
+from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
@@ -2867,6 +2869,27 @@ def run_pipeline(company_name: str, company_url: str,
             _report(progress_callback, "文档治理",
                     "跳过（无有效文档或表未迁移）", job_id=job_id)
             raw["_packed_context"] = {}
+
+    # ── Auto-trigger market_intelligence if no data exists ──
+    try:
+        from research.market_data_bridge import MarketDataBridge
+        bridge = MarketDataBridge()
+        existing = bridge.fetch_market_context(company_key)
+        if not existing and raw.get("website_host"):
+            _report(progress_callback, "市场情报", "自动运行市场情报采集...", job_id=job_id)
+            result = subprocess.run(
+                [sys.executable, "-m", "market_intelligence",
+                 "--company", raw.get("display_name", company_name),
+                 "--domain", raw.get("website_host", ""),
+                 "--no-crunchbase",
+                 "--timeout", "90"],
+                capture_output=True, text=True, timeout=120,
+                cwd=str(Path(__file__).resolve().parent.parent)
+            )
+            if result.returncode != 0:
+                print(f"[MarketIntelligence] auto-trigger failed: {result.stderr[:200]}", flush=True)
+    except Exception:
+        pass  # Non-blocking — pipeline continues without market data
 
     # Step 2: AI 分析
     _check_cancel()

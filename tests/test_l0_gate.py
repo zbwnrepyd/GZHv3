@@ -1,4 +1,4 @@
-"""L0 质量门控 — 单元测试"""
+"""L0 质量门控 — 单元测试（匹配 L0 实际输出结构）"""
 import unittest
 import sys
 from pathlib import Path
@@ -11,138 +11,121 @@ def _validate(*args, **kwargs):
     return validate_l0_output(*args, **kwargs)
 
 
+def _valid_l0():
+    """构建一个完整的 L0 输出样本，匹配 layer0-cleaner 的实际输出结构"""
+    return {
+        "company_identity": {
+            "company_key": "anthropic_com",
+            "display_name": "Anthropic",
+            "canonical_name": "Anthropic PBC",
+            "website_host": "anthropic.com",
+        },
+        "evidence_pool": [
+            {"source": "website", "title": "About Anthropic",
+             "url": "https://www.anthropic.com/company", "content": "Anthropic is an AI safety company...",
+             "score": 0.85},
+            {"source": "tavily", "title": "Anthropic raises $4B",
+             "url": "https://techcrunch.com/...", "content": "Anthropic has raised...",
+             "score": 0.75},
+        ],
+        "source_audit": {"website": 2, "tavily": 5, "github": 1},
+        "source_warnings": [],
+        "raw_sources": {},
+    }
+
+
 class TestL0Gate(unittest.TestCase):
     """验证 L0 输出完整性校验"""
 
-    # ── 1. Valid L0 output passes validation ──
-
-    def test_valid_output_passes(self):
+    def test_valid_l0_passes(self):
         """完整的 L0 输出应通过校验"""
-        l0_result = {
-            "company_name": "Anthropic",
-            "company_def": "An AI safety and research company building Claude, "
-                           "a family of large language models. Founded by former "
-                           "OpenAI researchers, Anthropic focuses on constitutional "
-                           "AI and safe deployment of frontier AI systems for "
-                           "enterprise customers.",
-            "main_product_name": "Claude",
-            "founded_date": "2021",
-            "company_type": "AI / LLM",
-            "headquarters": "San Francisco, CA",
-            "founder_name": "Dario Amodei",
-        }
-        is_valid, errors = _validate(l0_result)
+        l0 = _valid_l0()
+        is_valid, errors = _validate(l0)
         self.assertTrue(is_valid, f"Expected valid but got errors: {errors}")
-        self.assertEqual(len(errors), 0, f"Expected no errors but got: {errors}")
+        self.assertEqual(len(errors), 0)
 
-    # ── 2. Missing company_name fails ──
-
-    def test_missing_company_name_fails(self):
-        """缺少 company_name 应校验失败"""
-        l0_result = {
-            "company_def": "An AI company.",
-            "main_product_name": "Claude",
-            "founded_date": "2021",
-        }
-        is_valid, errors = _validate(l0_result)
+    def test_missing_company_identity_fails(self):
+        """缺少 company_identity 应校验失败"""
+        l0 = _valid_l0()
+        del l0["company_identity"]
+        is_valid, errors = _validate(l0)
         self.assertFalse(is_valid)
-        self.assertTrue(
-            any("company_name" in e for e in errors),
-            f"Expected 'company_name' in errors but got: {errors}",
-        )
+        self.assertTrue(any("company_identity" in e for e in errors))
 
-    # ── 3. Missing multiple fields reports all errors ──
-
-    def test_missing_multiple_fields_reports_all(self):
-        """缺少多个字段时应报告所有缺失"""
-        l0_result = {
-            "company_name": "",  # empty string
-            # company_def missing entirely
-            # main_product_name missing entirely
-            "founded_date": "   ",  # whitespace only
-        }
-        is_valid, errors = _validate(l0_result)
+    def test_missing_evidence_pool_fails(self):
+        """缺少 evidence_pool 应校验失败"""
+        l0 = _valid_l0()
+        del l0["evidence_pool"]
+        is_valid, errors = _validate(l0)
         self.assertFalse(is_valid)
-        self.assertTrue(len(errors) >= 3,
-                        f"Expected at least 3 errors for 3 missing fields but got: {errors}")
 
-    # ── 4. Too-short output fails ──
+    def test_empty_evidence_pool_fails(self):
+        """evidence_pool 为空列表应失败"""
+        l0 = _valid_l0()
+        l0["evidence_pool"] = []
+        is_valid, errors = _validate(l0)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("empty" in e.lower() for e in errors))
+
+    def test_evidence_pool_not_list_fails(self):
+        """evidence_pool 不是列表应失败"""
+        l0 = _valid_l0()
+        l0["evidence_pool"] = "not a list"
+        is_valid, errors = _validate(l0)
+        self.assertFalse(is_valid)
+
+    def test_missing_company_key_in_identity_fails(self):
+        """company_identity 缺少 company_key 应失败"""
+        l0 = _valid_l0()
+        l0["company_identity"] = {"display_name": "Test"}
+        is_valid, errors = _validate(l0)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("company_key" in e for e in errors))
+
+    def test_missing_display_name_in_identity_fails(self):
+        """company_identity 缺少 display_name 应失败"""
+        l0 = _valid_l0()
+        l0["company_identity"] = {"company_key": "test"}
+        is_valid, errors = _validate(l0)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("display_name" in e for e in errors))
+
+    def test_company_identity_not_dict_fails(self):
+        """company_identity 不是 dict 应失败"""
+        l0 = _valid_l0()
+        l0["company_identity"] = "just a string"
+        is_valid, errors = _validate(l0)
+        self.assertFalse(is_valid)
 
     def test_too_short_output_fails(self):
-        """所有字段为 1 个字符时因总字符太少而失败"""
-        l0_result = {
-            "company_name": "A",
-            "company_def": "B",
-            "main_product_name": "C",
-            "founded_date": "D",
+        """总输出太短应失败"""
+        l0 = {
+            "company_identity": {"company_key": "a", "display_name": "b"},
+            "evidence_pool": [{"x": "y"}],
         }
-        is_valid, errors = _validate(l0_result)
+        is_valid, errors = _validate(l0)
         self.assertFalse(is_valid)
-        self.assertTrue(
-            any("short" in e for e in errors),
-            f"Expected 'short' in errors but got: {errors}",
-        )
+        self.assertTrue(any("short" in e for e in errors))
 
-    # ── 5. Minimal valid output (just above 200 chars) passes ──
-
-    def test_minimal_valid_output_passes(self):
-        """刚好超过 200 字符的有效输出应通过"""
-        # Build a result where required fields + JSON overhead > 200 chars
-        l0_result = {
-            "company_name": "TestCo",
-            "company_def": "A" * 140,  # enough to push total over 200
-            "main_product_name": "TestProduct",
-            "founded_date": "2020",
+    def test_minimal_valid_passes(self):
+        """刚好超过 500 chars 的有效输出应通过"""
+        l0 = {
+            "company_identity": {"company_key": "test_co", "display_name": "TestCo"},
+            "evidence_pool": [
+                {"source": "web", "title": "X" * 60, "url": "https://x.com",
+                 "content": "Y" * 300, "score": 0.5}
+            ],
         }
-        is_valid, errors = _validate(l0_result)
+        is_valid, errors = _validate(l0)
         self.assertTrue(is_valid, f"Expected valid but got errors: {errors}")
-
-    # ── 6. None value for a required field fails ──
-
-    def test_none_value_fails(self):
-        """required 字段值为 None 时应失败"""
-        l0_result = {
-            "company_name": None,
-            "company_def": "An AI company with a long description " * 5,
-            "main_product_name": "Claude",
-            "founded_date": "2021",
-        }
-        is_valid, errors = _validate(l0_result)
-        self.assertFalse(is_valid)
-        self.assertTrue(
-            any("company_name" in e for e in errors),
-            f"Expected 'company_name' in errors but got: {errors}",
-        )
-
-    # ── 7. All required fields present but one whitespace fails ──
-
-    def test_whitespace_only_field_fails(self):
-        """required 字段仅为空白字符时应失败"""
-        l0_result = {
-            "company_name": "Anthropic",
-            "company_def": "An AI company " * 20,
-            "main_product_name": "   ",
-            "founded_date": "2021",
-        }
-        is_valid, errors = _validate(l0_result)
-        self.assertFalse(is_valid)
-        self.assertTrue(
-            any("main_product_name" in e for e in errors),
-            f"Expected 'main_product_name' in errors but got: {errors}",
-        )
-
-    # ── 8. L0GateError is a RuntimeError subclass ──
 
     def test_gate_error_is_runtime_error(self):
         """L0GateError 应是 RuntimeError 的子类"""
         from research.l0_gate import L0GateError
-        with self.assertRaises(L0GateError):
-            raise L0GateError("test error")
-        # Verify it's also a RuntimeError
         try:
             raise L0GateError("test")
         except RuntimeError:
-            pass  # expected
+            pass
         else:
             self.fail("L0GateError should be caught as RuntimeError")
 

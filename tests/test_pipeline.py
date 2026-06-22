@@ -1,5 +1,7 @@
+import json
 import os
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -69,6 +71,273 @@ class PipelineFailureTests(unittest.TestCase):
 
         llm_analysis.assert_not_called()
 
+    def test_collect_via_adapters_cancel_token_stops_while_adapter_is_running(self):
+        class SlowAdapter:
+            def collect(self, company_identity, field_targets, budget):
+                time.sleep(2)
+                return []
+
+        fake_identity = SimpleNamespace(
+            company_key="cancelco",
+            display_name="CancelCo",
+            input_name="CancelCo",
+            website_url="https://cancel.example",
+            website_host="cancel.example",
+            aliases=[],
+        )
+        fake_plan = SimpleNamespace(
+            adapters=[{
+                "adapter_family": "slow",
+                "field_targets": ["company_name"],
+                "budget": {},
+            }],
+            field_to_source_map={},
+            total_estimated_queries=1,
+            d_class_fields_skipped=[],
+        )
+
+        def fake_import(name, fromlist=(), *args, **kwargs):
+            if name == "research.adapters.slow_adapter":
+                return SimpleNamespace(SlowAdapter=SlowAdapter)
+            return __import__(name, globals(), locals(), fromlist, 0)
+
+        started = time.monotonic()
+        with patch.object(pipeline, "build_company_identity", return_value=fake_identity), \
+             patch.object(pipeline, "build_source_plan", return_value=fake_plan), \
+             patch("builtins.__import__", side_effect=fake_import):
+            with self.assertRaises(pipeline.PipelineCancelledError):
+                pipeline._collect_via_adapters(
+                    "CancelCo",
+                    "https://cancel.example",
+                    cancel_token=lambda: time.monotonic() - started > 0.2,
+                )
+
+        self.assertLess(time.monotonic() - started, 1.5)
+
+    def test_research_options_add_prefetch_and_supplemental_adapters(self):
+        plan = SimpleNamespace(
+            adapters=[{
+                "adapter_family": "tavily_search",
+                "field_targets": ["company_name"],
+                "budget": {"max_queries": 14},
+            }],
+            field_to_source_map={},
+            total_estimated_queries=14,
+        )
+        card_fields = [
+            "company_name", "funding_info", "product_tech_stack",
+            "founder_name", "main_product_name", "ltv",
+        ]
+
+        pipeline._apply_research_options_to_source_plan(
+            plan,
+            card_fields,
+            {
+                "official_site": True,
+                "scrapling_search": True,
+                "github": True,
+                "youtube": True,
+            },
+        )
+
+        families = [entry["adapter_family"] for entry in plan.adapters]
+        self.assertEqual(families[:2], ["official_site", "scrapling_search"])
+        self.assertNotIn("tavily_search", families)
+        self.assertIn("github", families)
+        self.assertIn("youtube", families)
+        self.assertIn("openbb", families)
+        self.assertIn("whatweb", families)
+        scrapling_entry = next(e for e in plan.adapters if e["adapter_family"] == "scrapling_search")
+        self.assertNotIn("ltv", scrapling_entry["field_targets"])
+
+    def test_card_set_field_targets_cover_v1_v2_v3_union(self):
+        fields = pipeline._load_card_set_field_targets()
+
+        self.assertEqual(len(fields), 87)
+        self.assertIn("timeline_events", fields)
+        self.assertIn("competitors_summary", fields)
+        self.assertIn("competitors_top3", fields)
+        self.assertIn("company_def", fields)
+        self.assertIn("product_tech_stack", fields)
+
+    def test_complete_contract_fields_fills_all_fields_json_keys(self):
+        record = {
+            "company_name": "DemoCo",
+            "version": "standard",
+            "company_type": "AI工具",
+        }
+
+        completed = pipeline._complete_contract_fields(record)
+        contract_keys = pipeline._load_field_contract_keys()
+
+        self.assertGreaterEqual(len(contract_keys), 115)
+        self.assertTrue(all(key in completed for key in contract_keys))
+        self.assertEqual(completed["company_type"], "AI工具")
+        self.assertEqual(completed["company_def"], "暂缺")
+
+    def test_execute_adapter_instances_records_empty_results(self):
+        class EmptyAdapter:
+            def collect(self, company_identity, field_targets, budget):
+                return []
+
+        docs, summary = pipeline._execute_adapter_instances(
+            [{
+                "adapter": EmptyAdapter(),
+                "entry": {
+                    "adapter_family": "scrapling_search",
+                    "field_targets": ["company_name"],
+                    "budget": {},
+                },
+            }],
+            {"display_name": "DemoCo"},
+        )
+
+        self.assertEqual(docs, [])
+        self.assertEqual(summary["scrapling_search"]["status"], "empty")
+
+    def test_execute_adapter_instances_uses_adapter_diagnostics_for_empty_results(self):
+        class DiagnosticAdapter:
+            last_summary = {}
+
+            def collect(self, company_identity, field_targets, budget):
+                self.last_summary = {
+                    "status": "empty",
+                    "count": 0,
+                    "query_count": 4,
+                    "serp_ok_count": 2,
+                    "parsed_url_count": 8,
+                    "fetched_url_count": 0,
+                    "failed_url_count": 8,
+                    "detail": "SERP成功 2/4，解析URL 8，有效文档 0",
+                }
+                return []
+
+        docs, summary = pipeline._execute_adapter_instances(
+            [{
+                "adapter": DiagnosticAdapter(),
+                "entry": {
+                    "adapter_family": "scrapling_search",
+                    "field_targets": ["company_name"],
+                    "budget": {},
+                },
+            }],
+            {"display_name": "DemoCo"},
+        )
+
+        self.assertEqual(docs, [])
+        self.assertEqual(summary["scrapling_search"]["parsed_url_count"], 8)
+        self.assertIn("SERP成功", summary["scrapling_search"]["detail"])
+
+    def test_execute_adapter_instances_hard_timeout_returns_without_waiting_for_worker(self):
+        class SlowAdapter:
+            def collect(self, company_identity, field_targets, budget):
+                time.sleep(2)
+                return []
+
+        started = time.monotonic()
+        with patch.dict(os.environ, {"ADAPTER_HARD_TIMEOUT_SECONDS": "1"}):
+            docs, summary = pipeline._execute_adapter_instances(
+                [{
+                    "adapter": SlowAdapter(),
+                    "entry": {
+                        "adapter_family": "official_site",
+                        "field_targets": ["company_name"],
+                        "budget": {},
+                    },
+                }],
+                {"display_name": "DemoCo"},
+            )
+
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.5)
+        self.assertEqual(docs, [])
+        self.assertEqual(summary["official_site"]["status"], "failed")
+        self.assertIn("超时", summary["official_site"]["detail"])
+
+    def test_execute_adapter_instances_uses_budget_hard_timeout_override(self):
+        class SlowAdapter:
+            def collect(self, company_identity, field_targets, budget):
+                time.sleep(0.15)
+                return [SimpleNamespace(content="ok")]
+
+        with patch.dict(os.environ, {"ADAPTER_HARD_TIMEOUT_SECONDS": "0"}):
+            docs, summary = pipeline._execute_adapter_instances(
+                [{
+                    "adapter": SlowAdapter(),
+                    "entry": {
+                        "adapter_family": "official_site",
+                        "field_targets": ["company_name"],
+                        "budget": {"hard_timeout_seconds": 1},
+                    },
+                }],
+                {"display_name": "DemoCo"},
+            )
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(summary["official_site"]["status"], "ok")
+
+    def test_special_adapter_class_names_load(self):
+        self.assertEqual(
+            pipeline._load_adapter_instance("youtube").__class__.__name__,
+            "YoutubeTranscriptAdapter",
+        )
+        self.assertEqual(
+            pipeline._load_adapter_instance("producthunt").__class__.__name__,
+            "ProductHuntAdapter",
+        )
+        self.assertEqual(
+            pipeline._load_adapter_instance("whatweb").__class__.__name__,
+            "WhatWebAdapter",
+        )
+
+    def test_github_adapter_imports_agent_from_webapp_cwd(self):
+        from research.adapters.github_adapter import _load_github_agent_class
+
+        cls = _load_github_agent_class()
+
+        self.assertEqual(cls.__name__, "GitHubAgent")
+
+    def test_apply_research_options_keeps_tavily_out_of_initial_adapter_plan(self):
+        source_plan = type('obj', (object,), {
+            'adapters': [
+                {
+                    "adapter_family": "tavily_search",
+                    "field_targets": ["company_name"],
+                    "budget": {},
+                    "priority": "high",
+                },
+                {
+                    "adapter_family": "official_site",
+                    "field_targets": ["company_name"],
+                    "budget": {},
+                    "priority": "high",
+                },
+            ],
+            'total_estimated_queries': 0,
+            'field_to_source_map': {},
+        })()
+
+        result = pipeline._apply_research_options_to_source_plan(
+            source_plan,
+            ["company_name", "product_tech_stack"],
+            {
+                "official_site": True,
+                "scrapling_search": True,
+                "tavily_search": True,
+                "tavily_extract": True,
+                "github": True,
+                "youtube": True,
+                "producthunt": True,
+                "whatweb": True,
+            },
+        )
+
+        families = [entry["adapter_family"] for entry in result.adapters]
+        self.assertNotIn("tavily_search", families)
+        self.assertNotIn("tavily_extract", families)
+        self.assertLess(families.index("scrapling_search"), families.index("github"))
+        self.assertIn("whatweb", families)
+
     def test_l3_identity_mismatch_fails_before_writing_database(self):
         mismatched_records = [
             {
@@ -101,8 +370,16 @@ class PipelineFailureTests(unittest.TestCase):
                 "data_confidence": "中",
             }
 
+        l0_valid_json = json.dumps({
+            "company_name": "DemoCo",
+            "company_def": "An AI tools company founded by Ada Demo, an MIT graduate who previously founded Demo Labs and won industry awards. The company provides innovative solutions for the enterprise market with a focus on automation and productivity.",
+            "main_product_name": "DemoTool",
+            "founded_date": "2020",
+            "company_type": "AI工具",
+        }, ensure_ascii=False)
+
         responses = [
-            "创始人 Ada Demo 毕业于 MIT，曾创办 Demo Labs 并获行业奖项。",  # L0
+            l0_valid_json,                                                 # L0 (valid JSON passing gate)
             "layer1",                                                       # L1
             "layer2",                                                       # L2
             # ── standard 版本 ──
@@ -127,9 +404,42 @@ class PipelineFailureTests(unittest.TestCase):
             )
 
         self.assertEqual(call.call_count, 9)
+        for index in (3, 5, 7):
+            self.assertEqual(call.call_args_list[index].kwargs["timeout"], 240)
+            self.assertEqual(call.call_args_list[index].kwargs["max_retries"], 5)
         self.assertEqual(records[0]["founder_edu"], "MIT")
         self.assertEqual(records[0]["founder_achievement"], "创办 Demo Labs，获行业奖项")
         self.assertFalse(any(stage == "补抓" for stage, _ in events))
+
+    def test_l3_main_retries_and_records_error_for_non_object_json(self):
+        l0_valid_json = json.dumps({
+            "company_name": "DemoCo",
+            "company_def": "An AI company providing developer tools for the modern web. Founded with a mission to simplify software development workflows across teams.",
+            "main_product_name": "DemoTool",
+            "founded_date": "2021",
+        }, ensure_ascii=False)
+        responses = [
+            l0_valid_json,
+            "layer1",
+            "layer2",
+            '"not an object"',
+            '"still not an object"',
+            '"not an object"',
+            '"still not an object"',
+            '"not an object"',
+            '"still not an object"',
+        ]
+
+        with patch.object(pipeline, "_load_prompt_text", return_value="prompt {{VERSION}}"), \
+             patch.object(pipeline, "call_deepseek", side_effect=responses):
+            records = pipeline.llm_analysis(
+                "DemoCo",
+                "https://demo.example",
+                {"website": {"text": "demo"}},
+            )
+
+        self.assertEqual(len(records), 3)
+        self.assertTrue(all(record.get("_error") for record in records))
 
     def test_collection_source_summary_counts_success_and_failures(self):
         tavily = pipeline._summarize_collection_source(
@@ -174,7 +484,24 @@ class PipelineFailureTests(unittest.TestCase):
             })()
 
             with self.assertRaises(RuntimeError):
-                pipeline._collect_via_adapters("DemoCo", "https://demo.example", on_progress)
+                pipeline._collect_via_adapters(
+                    "DemoCo",
+                    "https://demo.example",
+                    on_progress,
+                    research_options={
+                        "official_site": False,
+                        "scrapling_search": False,
+                        "tavily_search": False,
+                        "tavily_extract": False,
+                        "github": False,
+                        "producthunt": False,
+                        "youtube": False,
+                        "sec": False,
+                        "openbb": False,
+                        "companieshouse": False,
+                        "whatweb": False,
+                    },
+                )
 
     def test_tavily_search_tries_next_key_after_quota_limit(self):
         calls = []
@@ -257,6 +584,35 @@ class PipelineFailureTests(unittest.TestCase):
         }
 
         self.assertFalse(pipeline._needs_pre_gap_refetch(raw))
+
+    def test_l3_value_gap_refetch_skips_when_required_fields_have_values(self):
+        record = {
+            "company_name": "DemoCo",
+            "version": "standard",
+            "company_def": "DemoCo 是一款 AI 设计工具。",
+            "market_track": "AI 设计工具",
+            "market_subtrack": "消费级图像编辑",
+            "market_landscape_summary": "AI 设计工具赛道快速增长。",
+            "core_business": "提供 AI 图片生成与编辑。",
+            "competitors_top3": "[\"A\", \"B\", \"C\"]",
+            "competitive_position": "DemoCo 面向专业创作者。",
+        }
+
+        report = pipeline._evaluate_l3_value_gaps(record)
+
+        self.assertFalse(report["should_refetch"])
+        self.assertEqual(report["missing_required_fields"], [])
+        self.assertGreater(report["usable_field_count"], 0)
+
+    def test_l3_value_gap_refetch_fails_when_no_contract_fields_are_usable(self):
+        record = {
+            "company_name": "DemoCo",
+            "version": "standard",
+            "summary": "不是契约字段",
+        }
+
+        with self.assertRaises(RuntimeError):
+            pipeline._evaluate_l3_value_gaps(record)
 
     def test_gap_queries_are_limited_to_top_priority_intents(self):
         # P0: COLLECTION_GAP_QUERY_LIMIT=4，补采最多 4 条 query
@@ -396,6 +752,21 @@ class PipelineFailureTests(unittest.TestCase):
 
         self.assertEqual(fields, {})
 
+    def test_enum_group_returns_empty_when_llm_omits_json(self):
+        with patch.object(pipeline, "_load_prompt_text", return_value="prompt"), \
+             patch.object(pipeline, "call_deepseek", return_value="无法根据上下文判断这些枚举字段。"):
+            fields = pipeline._run_llm_enum_group("key", "A", "{}")
+
+        self.assertEqual(fields, {})
+
+    def test_enum_group_returns_empty_when_json_parser_raises(self):
+        with patch.object(pipeline, "_load_prompt_text", return_value="prompt"), \
+             patch.object(pipeline, "call_deepseek", return_value="bad json"), \
+             patch.object(pipeline, "_extract_json", side_effect=ValueError("Cannot parse JSON")):
+            fields = pipeline._run_llm_enum_group("key", "A", "{}")
+
+        self.assertEqual(fields, {})
+
     def test_run_pipeline_writes_field_rows_under_requested_company_name(self):
         inserted_batches = []
         records = [
@@ -428,6 +799,288 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertTrue(inserted_batches)
         self.assertTrue(all(row["company_name"] == "Limitless" for row in inserted_batches[0]))
         self.assertTrue(any(row["field_key"] == "company_type" for row in inserted_batches[0]))
+
+    def test_run_pipeline_respects_disabled_image_collection(self):
+        records = [
+            {
+                "company_name": "DemoCo",
+                "version": "standard",
+                "company_type": "AI工具",
+                "company_def": "Demo product",
+                "data_confidence": "中",
+            }
+        ]
+        progress = []
+
+        with patch.object(pipeline, "_collect_via_adapters", return_value={
+                "company_name": "DemoCo",
+                "company_key": "democo",
+                "display_name": "DemoCo",
+                "website": {"text": "ok"},
+                "_source_summary": {},
+            }), \
+             patch.object(pipeline, "llm_analysis", return_value=[dict(records[0])]), \
+             patch.object(pipeline.config, "COLLECTION_ENABLE_GAP_REFETCH", False), \
+             patch.object(field_repo, "insert_research_fields_batch", return_value=1), \
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}), \
+             patch("services.card_value_builder.CardValueBuilder.build_card_values", return_value=[]), \
+             patch("services.card_value_builder.CardValueBuilder.write_to_final_card_values", return_value=0), \
+             patch("asset_pipeline.collect_image_variants_pipeline") as collect_images:
+            pipeline.run_pipeline(
+                "DemoCo",
+                "https://demo.example",
+                progress_callback=lambda stage, detail: progress.append((stage, detail)),
+                research_options={"image_collection": False},
+            )
+
+        collect_images.assert_not_called()
+        self.assertTrue(any(stage == "图片采集跳过" for stage, _detail in progress))
+
+    def test_mark_and_log_fields_passes_run_id_to_entity_sync(self):
+        field_rows = [
+            {
+                "company_name": "DemoCo",
+                "company_key": "democo",
+                "field_key": "company_type",
+                "field_value": "AI工具",
+            }
+        ]
+
+        with patch("research.field_status._load_manifest", return_value={}), \
+             patch("research.evidence_extractor.build_evidence_map", return_value={}), \
+             patch("research.field_resolver.resolve_all") as resolve_all, \
+             patch("repositories.field_repo.update_field_status_batch"), \
+             patch.object(pipeline.config, "ENTITY_TABLES_PRIMARY", True), \
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}) as sync:
+            resolve_all.return_value = {
+                "company_type": SimpleNamespace(
+                    value="AI工具",
+                    resolution_status="llm_extracted",
+                    unavailable_reason="",
+                    resolution_method="llm",
+                )
+            }
+
+            pipeline._mark_and_log_fields(
+                "unused.sqlite",
+                "DemoCo",
+                "standard",
+                field_rows,
+                run_id="run-123",
+            )
+
+        sync.assert_called_once()
+        self.assertEqual(sync.call_args.kwargs["run_id"], "run-123")
+
+    def test_bind_field_value_evidence_creates_spans_from_field_values_and_chunks(self):
+        """LLM后、分辨率前：字段值在chunks中出现时创建 evidence_spans。"""
+        import sqlite3, tempfile
+
+        db_path = os.path.join(tempfile.mkdtemp(), "test_evidence.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS document_chunks ("
+            "id INTEGER PRIMARY KEY, document_id INTEGER, chunk_text TEXT, "
+            "is_noise INTEGER DEFAULT 0, final_score REAL DEFAULT 0.5)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS evidence_spans ("
+            "id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT, "
+            "field_key TEXT, quote_text TEXT, normalized_fact TEXT, "
+            "confidence REAL, created_by_agent TEXT, "
+            "start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0)"
+        )
+        conn.execute(
+            "INSERT INTO document_chunks(id, document_id, chunk_text, is_noise, final_score) "
+            "VALUES (1, 1, 'DemoCo is an AI SaaS platform for enterprise automation.', 0, 0.7)"
+        )
+        conn.commit()
+        conn.close()
+
+        field_rows = [
+            {"field_key": "company_type", "field_value": "AI SaaS"},
+            {"field_key": "company_def", "field_value": "enterprise automation platform"},
+            {"field_key": "founding_year", "field_value": "2020"},
+            {"field_key": "unknown_field", "field_value": "暂缺"},
+        ]
+
+        count = pipeline._bind_field_value_evidence(
+            db_path, "democo", "DemoCo", field_rows, [1]
+        )
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        spans = conn.execute("SELECT * FROM evidence_spans").fetchall()
+        conn.close()
+
+        self.assertGreater(count, 0, "Should create at least one evidence span")
+        self.assertGreaterEqual(len(spans), 1)
+        # Verify agent tag — must NOT be posthoc_weak_matcher
+        for span in spans:
+            self.assertNotEqual(
+                span["created_by_agent"], "posthoc_weak_matcher",
+                "field_value_matcher spans must not use the filtered agent tag")
+            self.assertGreaterEqual(
+                span["confidence"], 0.55,
+                "Confidence should be >= 0.55 to pass build_evidence_map threshold")
+
+    def test_field_value_evidence_allows_official_fact_confirmed(self):
+        import sqlite3, tempfile
+        from research.evidence_extractor import build_evidence_map
+        from research.field_resolver import resolve_all
+
+        db_path = os.path.join(tempfile.mkdtemp(), "test_confirmed.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+        CREATE TABLE document_chunks (
+            id INTEGER PRIMARY KEY, document_id INTEGER, chunk_text TEXT,
+            is_noise INTEGER DEFAULT 0, final_score REAL DEFAULT 0.7
+        );
+        CREATE TABLE evidence_spans (
+            id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT,
+            field_key TEXT, quote_text TEXT, normalized_fact TEXT,
+            confidence REAL, created_by_agent TEXT,
+            start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0
+        );
+        """)
+        conn.execute(
+            "INSERT INTO document_chunks(id, document_id, chunk_text, final_score) VALUES (?, ?, ?, ?)",
+            (1, 10, "Ideogram is an AI image generation platform for creators.", 0.7),
+        )
+        conn.commit()
+        conn.close()
+
+        field_rows = [{"field_key": "company_type", "field_value": "AI image generation platform"}]
+        pipeline._bind_field_value_evidence(db_path, "ideogram.ai", "Ideogram", field_rows, [1])
+
+        evidence_map = build_evidence_map(db_path, "ideogram.ai", ["company_type"])
+        resolved = resolve_all(
+            {"company_type": "AI image generation platform"},
+            {"company_type": {"resolution_type": "official_fact", "category": "A"}},
+            evidence_map=evidence_map,
+        )
+
+        self.assertEqual(resolved["company_type"].resolution_status, "confirmed")
+
+    def test_bind_field_value_evidence_skips_when_no_chunks(self):
+        count = pipeline._bind_field_value_evidence(
+            ":memory:", "democo", "DemoCo",
+            [{"field_key": "company_type", "field_value": "AI"}], []
+        )
+        self.assertEqual(count, 0)
+
+    def test_producthunt_adapter_reports_not_configured_when_no_key(self):
+        """ProductHunt 适配器缺 Key 时返回空 + not_configured 状态。"""
+        from research.adapters.producthunt_adapter import ProductHuntAdapter
+
+        adapter = ProductHuntAdapter()
+        with patch.dict(os.environ, {}, clear=True):
+            docs = adapter.collect(
+                {"display_name": "TestCo", "website_host": "testco.com"},
+                ["main_product_name"],
+                {"max_documents": 1},
+            )
+        self.assertEqual(docs, [])
+        self.assertEqual(adapter.last_summary.get("status"), "not_configured")
+
+    def test_openbb_adapter_works_without_api_key_local_mode(self):
+        """本地 OpenBB Platform 无需 API Key，不再返回 not_configured。"""
+        from research.adapters.openbb_adapter import OpenBBAdapter
+
+        adapter = OpenBBAdapter()
+        with patch.dict(os.environ, {}, clear=True):
+            docs = adapter.collect(
+                {"display_name": "TestCo", "website_host": "testco.com"},
+                ["company_revenue"],
+                {"max_documents": 1},
+            )
+        # 不因缺少 API Key 而报 not_configured（本地部署无需 Key）
+        self.assertNotEqual(adapter.last_summary.get("status"), "not_configured")
+
+    def test_bind_field_value_evidence_matches_json_array_values(self):
+        """Complex values like JSON arrays should be searchable in chunks."""
+        import sqlite3, tempfile
+        db_path = os.path.join(tempfile.mkdtemp(), "test_json.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+        CREATE TABLE document_chunks (id INTEGER PRIMARY KEY, document_id INTEGER, chunk_text TEXT, is_noise INTEGER DEFAULT 0, final_score REAL DEFAULT 0.5);
+        CREATE TABLE evidence_spans (id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT, field_key TEXT, quote_text TEXT, normalized_fact TEXT, confidence REAL, created_by_agent TEXT, start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0);
+        """)
+        conn.execute("INSERT INTO document_chunks(id, document_id, chunk_text, final_score) VALUES (1,1,'social media and SEO are the main channels for user acquisition',0.6)")
+        conn.commit(); conn.close()
+
+        field_rows = [
+            {"field_key": "acquisition_channels", "field_value": '[{"name": "social media", "score": "high"}, {"name": "SEO", "score": "high"}]'},
+        ]
+        count = pipeline._bind_field_value_evidence(db_path, "test", "TestCo", field_rows, [1])
+        self.assertGreater(count, 0, "Should match complex JSON values by extracting text")
+
+    def test_bind_field_value_evidence_matches_short_numeric_values(self):
+        """Short values like '2022' should match via >=4 char single token rule."""
+        import sqlite3, tempfile
+        db_path = os.path.join(tempfile.mkdtemp(), "test_num.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+        CREATE TABLE document_chunks (id INTEGER PRIMARY KEY, document_id INTEGER, chunk_text TEXT, is_noise INTEGER DEFAULT 0, final_score REAL DEFAULT 0.5);
+        CREATE TABLE evidence_spans (id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT, field_key TEXT, quote_text TEXT, normalized_fact TEXT, confidence REAL, created_by_agent TEXT, start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0);
+        """)
+        conn.execute("INSERT INTO document_chunks(id, document_id, chunk_text, final_score) VALUES (1,1,'Founded in 2022 by former Google researchers.',0.6)")
+        conn.commit(); conn.close()
+
+        field_rows = [{"field_key": "founding_year", "field_value": "2022"}]
+        count = pipeline._bind_field_value_evidence(db_path, "test", "TestCo", field_rows, [1])
+        self.assertGreater(count, 0, "Should match short values like '2022'")
+
+    def test_bind_field_value_evidence_creates_multiple_spans_per_field(self):
+        """A field value appearing in multiple chunks should get multiple spans (up to 3)."""
+        import sqlite3, tempfile
+        db_path = os.path.join(tempfile.mkdtemp(), "test_multi.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+        CREATE TABLE document_chunks (id INTEGER PRIMARY KEY, document_id INTEGER, chunk_text TEXT, is_noise INTEGER DEFAULT 0, final_score REAL DEFAULT 0.5);
+        CREATE TABLE evidence_spans (id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT, field_key TEXT, quote_text TEXT, normalized_fact TEXT, confidence REAL, created_by_agent TEXT, start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0);
+        """)
+        conn.executemany("INSERT INTO document_chunks(id, document_id, chunk_text, final_score) VALUES (?,?,?,?)", [
+            (1,1,"Ideogram is an AI image generation platform.",0.7),
+            (2,2,"The AI image generation platform Ideogram was founded in 2022.",0.6),
+            (3,3,"As an AI image generation platform, Ideogram competes with Midjourney.",0.5),
+        ])
+        conn.commit(); conn.close()
+
+        field_rows = [{"field_key": "company_type", "field_value": "AI image generation platform"}]
+        count = pipeline._bind_field_value_evidence(db_path, "test", "TestCo", field_rows, [1,2,3])
+        self.assertGreaterEqual(count, 2, "Should create >=2 spans for value found in multiple chunks")
+
+    def test_posthoc_weak_evidence_does_not_create_confirmable_strong_spans(self):
+        """posthoc binding remains weak-only; confirmed evidence is created before status resolution."""
+        import sqlite3, tempfile
+        db_path = os.path.join(tempfile.mkdtemp(), "test_strong.db")
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+        CREATE TABLE source_documents (
+            id INTEGER PRIMARY KEY, run_id TEXT, company_key TEXT, source_type TEXT,
+            source_url TEXT, title TEXT, publisher TEXT, published_at TEXT,
+            fetched_at TEXT, raw_text TEXT, content_hash TEXT, trust_tier TEXT, intent TEXT
+        );
+        CREATE TABLE evidence_spans (id INTEGER PRIMARY KEY, document_id INTEGER, company_key TEXT, field_key TEXT, quote_text TEXT, normalized_fact TEXT, confidence REAL, created_by_agent TEXT, start_offset INTEGER DEFAULT 0, end_offset INTEGER DEFAULT 0);
+        """)
+        conn.commit(); conn.close()
+
+        evidence_pool = [type('e',(),{
+            'title':'Test','url':'http://example.com','content':'Ideogram founded in 2022 has 50 employees and raised Series A',
+            'source':'search','intent':'test','final_score':0.5
+        })()]
+        field_rows = [{"field_key":"funding_stage","field_value":"raised Series A"}]
+
+        with patch.object(pipeline.config, 'POSTHOC_EVIDENCE_WEAK_ONLY', True):
+            pipeline._bind_posthoc_weak_evidence(db_path, 'testco', 'TestCo', field_rows, evidence_pool, run_id='t1')
+
+        conn = sqlite3.connect(db_path)
+        strong_spans = conn.execute("SELECT * FROM evidence_spans WHERE created_by_agent='posthoc_strong_matcher'").fetchall()
+        weak_spans = conn.execute("SELECT * FROM evidence_spans WHERE created_by_agent='posthoc_weak_matcher'").fetchall()
+        conn.close()
+        self.assertEqual(len(strong_spans), 0)
+        self.assertGreaterEqual(len(weak_spans), 1)
 
 
 if __name__ == "__main__":

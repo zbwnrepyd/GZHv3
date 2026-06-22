@@ -2,7 +2,7 @@
 from __future__ import annotations
 import copy
 import json, os, re, time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -45,18 +45,90 @@ from research.field_driven_source_planner import (
 )
 from research.source_adapter import ADAPTER_REGISTRY
 
+# ── L0 质量门控 ──
+from research.l0_gate import validate_l0_output, L0GateError
+
 _REQUIRED_FIELDS = database.REQUIRED_RESEARCH_FIELDS
 
 _SOURCE_LABELS = {
+    "scrapling_search": "开放网页搜索",
     "tavily": "Tavily 搜索",
+    "tavily_search": "Tavily 搜索",
+    "tavily_extract": "Tavily 深抓",
     "github": "GitHub",
     "youtube": "YouTube",
+    "youtube_transcript": "YouTube",
+    "official_site": "官网抓取",
     "website": "官网抓取",
+    "producthunt": "Product Hunt",
+    "sec": "SEC",
+    "openbb": "OpenBB",
+    "companieshouse": "Companies House",
+    "whatweb": "WhatWeb",
 }
 
 _TAVILY_RESULT_FIELDS = ("title", "url", "content", "score", "raw_content")
 _TAVILY_RAW_CONTENT_LIMIT = 2400
 _TAVILY_QUERY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_ADAPTER_MODULE_BY_FAMILY = {
+    "official_site": "official_site_adapter",
+    "scrapling_search": "scrapling_search_adapter",
+    "tavily_search": "tavily_search_adapter",
+    "tavily_extract": "tavily_extract_adapter",
+    "github": "github_adapter",
+    "producthunt": "producthunt_adapter",
+    "youtube": "youtube_transcript_adapter",
+    "sec": "sec_adapter",
+    "openbb": "openbb_adapter",
+    "companieshouse": "companieshouse_adapter",
+    "whatweb": "whatweb_adapter",
+}
+_ADAPTER_CLASS_BY_FAMILY = {
+    "official_site": "OfficialSiteAdapter",
+    "scrapling_search": "ScraplingSearchAdapter",
+    "tavily_search": "TavilySearchAdapter",
+    "tavily_extract": "TavilyExtractAdapter",
+    "github": "GithubAdapter",
+    "producthunt": "ProductHuntAdapter",
+    "youtube": "YoutubeTranscriptAdapter",
+    "sec": "SecAdapter",
+    "openbb": "OpenBBAdapter",
+    "companieshouse": "CompaniesHouseAdapter",
+    "whatweb": "WhatWebAdapter",
+}
+_PRIVATE_FIELD_KEYS = {
+    "ltv", "cac", "ltv_cac_ratio", "arr", "mrr", "revenue",
+    "gross_margin", "burn_rate", "retention_rate", "churn_rate",
+}
+_FIRST_PHASE_ADAPTERS = (
+    "official_site",
+    "scrapling_search",
+    "github",
+    "youtube",
+    "producthunt",
+    "whatweb",
+)
+_SUPPLEMENTAL_ADAPTER_FIELDS = {
+    "github": [
+        "product_tech_stack", "core_competency", "company_achievements",
+        "main_product_name", "product_core_features",
+    ],
+    "youtube": [
+        "founder_name", "founder_bg", "founder_achievement",
+        "main_product_name", "product_core_features", "funding_info",
+    ],
+    "producthunt": [
+        "main_product_name", "product_core_features", "company_achievements",
+        "pricing_summary", "customer_segment",
+    ],
+    "openbb": [
+        "company_revenue", "revenue_metrics", "growth_metrics",
+        "gross_margin", "runway_months",
+    ],
+    "whatweb": [
+        "product_tech_stack", "tech_stack", "core_competency",
+    ],
+}
 _GAP_INTENT_PRIORITY = [
     "market_size",
     "unit_economics",
@@ -94,6 +166,378 @@ def _detail_text(detail) -> str:
     if isinstance(detail, dict):
         return str(detail.get("message") or "")
     return str(detail or "")
+
+
+def _is_cancelled(cancel_token) -> bool:
+    return bool(callable(cancel_token) and cancel_token())
+
+
+def _adapter_query_count(entry: dict) -> int:
+    budget = entry.get("budget") or {}
+    return int(budget.get("max_queries", budget.get("max_urls", budget.get("max_documents", 0))) or 0)
+
+
+def _public_field_targets(card_fields: list[str]) -> list[str]:
+    return [field for field in card_fields if field not in _PRIVATE_FIELD_KEYS]
+
+
+def _project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_field_contract_keys() -> list[str]:
+    contract_path = os.path.join(_project_root(), "contracts", "fields.json")
+    try:
+        with open(contract_path, encoding="utf-8") as f:
+            contract = json.load(f)
+    except Exception:
+        return list(dict.fromkeys(getattr(database, "RESEARCH_SAVE_FIELDS", _REQUIRED_FIELDS)))
+
+    keys = []
+    for group in contract.get("groups", []):
+        for field in group.get("fields", []):
+            key = field.get("field_key")
+            if key and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _load_required_field_contract_keys() -> list[str]:
+    contract_path = os.path.join(_project_root(), "contracts", "fields.json")
+    try:
+        with open(contract_path, encoding="utf-8") as f:
+            contract = json.load(f)
+    except Exception:
+        return []
+
+    keys = []
+    for group in contract.get("groups", []):
+        for field in group.get("fields", []):
+            if field.get("deprecated"):
+                continue
+            key = field.get("field_key")
+            if key and field.get("required") is True and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _extract_contract_field_values(record: dict) -> dict[str, object]:
+    contract_keys = set(_load_field_contract_keys())
+    skip_keys = {"version"}
+    return {
+        key: value
+        for key, value in (record or {}).items()
+        if key in contract_keys and key not in skip_keys
+    }
+
+
+def _evaluate_l3_value_gaps(record: dict) -> dict:
+    """Evaluate L3 value gaps before evidence/status resolution is available."""
+    field_values = _extract_contract_field_values(record)
+    usable_fields = {
+        key: value for key, value in field_values.items()
+        if not _is_missing_value(value)
+    }
+    identity_fields = {"company_name", "website_url"}
+    usable_content_fields = {
+        key: value for key, value in usable_fields.items()
+        if key not in identity_fields
+    }
+    if not usable_content_fields:
+        version = (record or {}).get("version", "standard")
+        raise RuntimeError(f"L3 {version} 版未返回任何可用契约字段")
+
+    required_fields = _load_required_field_contract_keys()
+    missing_required = [
+        key for key in required_fields
+        if _is_missing_value(field_values.get(key))
+    ]
+    return {
+        "should_refetch": bool(missing_required),
+        "missing_required_fields": missing_required,
+        "field_count": len(field_values),
+        "usable_field_count": len(usable_fields),
+        "usable_content_field_count": len(usable_content_fields),
+    }
+
+
+def _fields_from_card_config(config_json: str) -> list[str]:
+    try:
+        config_data = json.loads(config_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [
+        field for field in config_data.get("fields", [])
+        if isinstance(field, str) and field.strip()
+    ]
+
+
+def _load_card_set_field_targets(set_keys: tuple[str, ...] = ("v1", "v2", "v3")) -> list[str]:
+    fields = []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(config.DB_PATH_COMPOSITION)
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" for _ in set_keys)
+        rows = conn.execute(
+            f"""SELECT config_json FROM default_card_configs
+                WHERE set_key IN ({placeholders})
+                ORDER BY set_key, card_index""",
+            set_keys,
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            for field in _fields_from_card_config(row["config_json"]):
+                if field not in fields:
+                    fields.append(field)
+    except Exception:
+        fields = []
+
+    if fields:
+        return fields
+
+    # Fallback for fresh or damaged composition DBs: parse the checked-in seed SQL.
+    sql_path = os.path.join(_project_root(), "db", "init_composition_db.sql")
+    try:
+        with open(sql_path, encoding="utf-8") as f:
+            content = f.read()
+        for set_key in set_keys:
+            pattern = rf"\('{set_key}',\s*'[^']*',\s*\d+,\s*'[^']*',\s*'(\{{.*?\}})'\)"
+            for match in re.finditer(pattern, content):
+                for field in _fields_from_card_config(match.group(1)):
+                    if field not in fields:
+                        fields.append(field)
+    except Exception:
+        fields = []
+
+    return fields or _load_field_contract_keys()
+
+
+def _complete_contract_fields(record: dict) -> dict:
+    completed = dict(record)
+    for field in _load_field_contract_keys():
+        val = completed.get(field)
+        if val is None or (isinstance(val, str) and val.strip() == ""):
+            completed[field] = "暂缺"
+    return completed
+
+
+def _upsert_adapter_plan(source_plan, adapter_family: str, field_targets: list[str],
+                         budget: dict, priority: str = "medium",
+                         prepend: bool = False) -> None:
+    fields = [field for field in field_targets if field]
+    for entry in source_plan.adapters:
+        if entry.get("adapter_family") != adapter_family:
+            continue
+        existing_fields = list(entry.get("field_targets") or [])
+        for field in fields:
+            if field not in existing_fields:
+                existing_fields.append(field)
+        entry["field_targets"] = existing_fields
+        entry["budget"] = {**(entry.get("budget") or {}), **(budget or {})}
+        entry["priority"] = priority or entry.get("priority") or "medium"
+        return
+
+    adapter_entry = {
+        "adapter_family": adapter_family,
+        "field_targets": fields,
+        "budget": budget or {},
+        "priority": priority,
+    }
+    if prepend:
+        source_plan.adapters.insert(0, adapter_entry)
+    else:
+        source_plan.adapters.append(adapter_entry)
+
+
+def _apply_research_options_to_source_plan(source_plan, card_fields: list[str],
+                                           research_options: dict | None):
+    options = research_options or {}
+    # Tavily 只作为本机/开放网页第一轮后的补缺口路径，不进入初始 adapter 计划。
+    source_plan.adapters = [
+        entry for entry in source_plan.adapters
+        if entry.get("adapter_family") not in ("tavily_search", "tavily_extract")
+    ]
+    disabled_adapters = {
+        key for key, enabled in options.items()
+        if enabled is False and key in _ADAPTER_MODULE_BY_FAMILY
+    }
+    if disabled_adapters:
+        source_plan.adapters = [
+            entry for entry in source_plan.adapters
+            if entry.get("adapter_family") not in disabled_adapters
+        ]
+        for field_key, families in list(source_plan.field_to_source_map.items()):
+            source_plan.field_to_source_map[field_key] = [
+                family for family in families if family not in disabled_adapters
+                and family not in ("tavily_search", "tavily_extract")
+            ]
+
+    public_fields = _public_field_targets(card_fields)
+    if options.get("official_site", True):
+        _upsert_adapter_plan(
+            source_plan,
+        "official_site",
+        public_fields,
+        {"max_urls": 5, "max_documents": 5, "timeout_seconds": 30, "hard_timeout_seconds": 180},
+        priority="high",
+        prepend=True,
+    )
+    if options.get("scrapling_search"):
+        _upsert_adapter_plan(
+            source_plan,
+            "scrapling_search",
+            public_fields,
+            {"max_queries": 30, "max_documents": 20,
+             "timeout_seconds": 10, "enabled": True,
+             "hard_timeout_seconds": 300},
+            priority="high",
+            prepend=True,
+        )
+    for family, fields in _SUPPLEMENTAL_ADAPTER_FIELDS.items():
+        if options.get(family, True):
+            _upsert_adapter_plan(
+                source_plan,
+                family,
+                [field for field in fields if field in card_fields] or public_fields[:8],
+                {"max_queries": 3, "max_documents": 3, "timeout_seconds": 20},
+                priority="medium",
+                prepend=False,
+            )
+    source_plan.adapters.sort(
+        key=lambda entry: (
+            0 if entry.get("adapter_family") in _FIRST_PHASE_ADAPTERS else 1,
+            _FIRST_PHASE_ADAPTERS.index(entry.get("adapter_family"))
+            if entry.get("adapter_family") in _FIRST_PHASE_ADAPTERS else 99,
+        )
+    )
+    source_plan.total_estimated_queries = sum(
+        _adapter_query_count(entry) for entry in source_plan.adapters
+    )
+    return source_plan
+
+
+def _load_adapter_instance(family: str):
+    module_name = _ADAPTER_MODULE_BY_FAMILY.get(family, f"{family}_adapter")
+    class_name = _ADAPTER_CLASS_BY_FAMILY.get(
+        family,
+        f"{family.title().replace('_', '')}Adapter",
+    )
+    mod = __import__(f"research.adapters.{module_name}", fromlist=[class_name])
+    adapter_cls = getattr(mod, class_name, None)
+    if adapter_cls is None:
+        raise RuntimeError(f"adapter class not found: {class_name}")
+    return adapter_cls()
+
+
+def _execute_adapter_instances(adapter_instances: list[dict], identity_dict: dict,
+                               cancel_token=None, progress_callback=None,
+                               job_id: str = "") -> tuple[list, dict]:
+    all_docs = []
+    source_summary = {}
+    if not adapter_instances:
+        return all_docs, source_summary
+
+    ex = ThreadPoolExecutor(max_workers=min(4, len(adapter_instances)))
+    futures = {}
+    # Per-adapter hard timeout (default 120s, from budget or env)
+    _ADAPTER_HARD_TIMEOUT = float(os.environ.get("ADAPTER_HARD_TIMEOUT_SECONDS", "120"))
+    _started_at: dict = {}
+    cancelled = False
+    timed_out = False
+    try:
+        for inst in adapter_instances:
+            if _is_cancelled(cancel_token):
+                cancelled = True
+                raise PipelineCancelledError("用户取消研究")
+            entry = inst["entry"]
+            family = entry["adapter_family"]
+            source_summary.setdefault(family, {
+                "status": "collecting",
+                "count": 0,
+                "detail": "采集中...",
+            })
+            future = ex.submit(
+                inst["adapter"].collect,
+                identity_dict,
+                entry["field_targets"],
+                entry["budget"],
+            )
+            futures[future] = inst
+            _started_at[future] = time.time()
+
+        pending = set(futures)
+        while pending:
+            if _is_cancelled(cancel_token):
+                cancelled = True
+                for future in pending:
+                    future.cancel()
+                raise PipelineCancelledError("用户取消研究")
+
+            # Hard timeout: cancel adapters that exceed the budget
+            now = time.time()
+            for future in list(pending):
+                inst = futures[future]
+                budget = inst["entry"].get("budget") or {}
+                hard_timeout = float(budget.get("hard_timeout_seconds", _ADAPTER_HARD_TIMEOUT))
+                if now - _started_at.get(future, now) > hard_timeout:
+                    timed_out = True
+                    future.cancel()
+                    family = inst["entry"]["adapter_family"]
+                    source_summary[family] = {
+                        "status": "failed",
+                        "count": 0,
+                        "detail": f"超时（>{hard_timeout:g}s）",
+                    }
+                    pending.discard(future)
+
+            if not pending:
+                break
+
+            done, pending = wait(
+                pending,
+                timeout=0.2,
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                inst = futures[future]
+                family = inst["entry"]["adapter_family"]
+                adapter = inst["adapter"]
+                try:
+                    docs = future.result(timeout=5)
+                    if docs:
+                        adapter_summary = getattr(adapter, "last_summary", None)
+                        all_docs.extend(docs)
+                        source_summary[family] = {
+                            "status": "ok",
+                            "count": len(docs),
+                            "detail": f"{len(docs)} documents",
+                            **(adapter_summary if isinstance(adapter_summary, dict) else {}),
+                        }
+                    else:
+                        adapter_summary = getattr(adapter, "last_summary", None)
+                        if isinstance(adapter_summary, dict) and adapter_summary:
+                            source_summary[family] = adapter_summary
+                        else:
+                            source_summary[family] = {
+                                "status": "empty",
+                                "count": 0,
+                                "detail": "已运行，未获得有效文档",
+                            }
+                except Exception as e:
+                    source_summary[family] = {
+                        "status": "failed",
+                        "count": 0,
+                        "detail": str(e)[:220],
+                    }
+    finally:
+        if cancelled:
+            ex.shutdown(wait=False, cancel_futures=True)
+        elif timed_out:
+            ex.shutdown(wait=False, cancel_futures=True)
+        else:
+            ex.shutdown(wait=True)
+    return all_docs, source_summary
 
 
 # ── Step 1: 4路并行采集 ──────────────────────────
@@ -624,8 +1068,12 @@ def _summarize_collection_source(name: str, data) -> dict:
 
 
 def _collect_via_adapters(company_name: str, company_url: str,
-                          progress_callback=None, job_id: str = None) -> dict:
+                          progress_callback=None, job_id: str = None,
+                          research_options: dict | None = None,
+                          cancel_token=None) -> dict:
     """P1: 字段驱动采集 — 使用 SourceAdapter，SPEC v3 唯一采集路径。"""
+    if _is_cancelled(cancel_token):
+        raise PipelineCancelledError("用户取消研究")
     identity = build_company_identity(company_name, company_url)
 
     # 加载 manifest 获取字段清单
@@ -635,36 +1083,8 @@ def _collect_via_adapters(company_name: str, company_url: str,
     except Exception:
         manifest = {}
 
-    # 获取 v3 card_schema 的字段列表
-    card_fields = []
-    try:
-        from repositories.card_config_repo import get_card_config
-        import sqlite3
-        conn = sqlite3.connect(config.DB_PATH_COMPOSITION)
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT field_key FROM card_schema WHERE card_set_key='v3'"
-        ).fetchall()
-        card_fields = list(set(r["field_key"] for r in rows))
-        conn.close()
-    except Exception:
-        # 回退：使用已知的 v3 字段
-        card_fields = [
-            "company_name", "company_type", "market_landscape_summary",
-            "market_size_value", "market_cagr", "tam_value", "location",
-            "founded_date", "core_business", "core_competency",
-            "funding_info", "funding_rounds", "company_achievements",
-            "industry_positioning", "main_product_name", "product_pain_points",
-            "product_core_features", "product_usage_playbook", "product_tech_stack",
-            "regional_market_focus", "mau", "retention_rate",
-            "pricing_summary", "pricing_tiers", "founder_name", "founder_edu",
-            "founder_bg", "founder_achievement", "team_size", "team_highlight",
-            "ideal_customer_profile", "customer_names", "customer_selection_reasons",
-            "ecosystem_niche", "revenue_model", "pricing_strategy",
-            "ltv", "cac", "ltv_cac_ratio", "growth_strategy", "gtm_strategy",
-            "growth_flywheel", "acquisition_channels", "competitors_top3",
-            "competitive_position", "differentiated_opportunity", "competitive_advantages",
-        ]
+    # 三套卡共用字段目标；不要依赖已废弃/不存在的 card_schema 表。
+    card_fields = _load_card_set_field_targets()
 
     # 构建采集计划
     identity_dict = {
@@ -677,6 +1097,9 @@ def _collect_via_adapters(company_name: str, company_url: str,
         "country_hint": "",
     }
     source_plan = build_source_plan(identity_dict, card_fields, manifest)
+    source_plan = _apply_research_options_to_source_plan(
+        source_plan, card_fields, research_options
+    )
 
     _report(progress_callback, "采集", {
         "message": f"字段驱动采集: {len(source_plan.adapters)} adapters, "
@@ -699,56 +1122,56 @@ def _collect_via_adapters(company_name: str, company_url: str,
     source_summary = {}
     all_docs = []
 
-    # 并行执行 adapter（用 ThreadPoolExecutor）
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
+    # 第一阶段：官网 + Scrapling；第二阶段：Tavily/GitHub/YouTube 等补充源。
     adapter_instances = []
     for adapter_entry in source_plan.adapters:
+        if _is_cancelled(cancel_token):
+            raise PipelineCancelledError("用户取消研究")
         family = adapter_entry["adapter_family"]
         try:
-            mod = __import__(
-                f"research.adapters.{family}_adapter",
-                fromlist=[family],
-            )
-            adapter_cls = getattr(mod, f"{family.title().replace('_', '')}Adapter", None)
-            if adapter_cls:
-                adapter_instances.append({
-                    "adapter": adapter_cls(),
-                    "entry": adapter_entry,
-                })
+            adapter_instances.append({
+                "adapter": _load_adapter_instance(family),
+                "entry": adapter_entry,
+            })
         except Exception as e:
             print(f"[adapters] Failed to load {family}: {e}")
+            source_summary[family] = {
+                "status": "failed",
+                "count": 0,
+                "detail": str(e)[:220],
+            }
 
-    if adapter_instances:
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            futures = {}
-            for inst in adapter_instances:
-                entry = inst["entry"]
-                future = ex.submit(
-                    inst["adapter"].collect,
-                    identity_dict,
-                    entry["field_targets"],
-                    entry["budget"],
-                )
-                futures[future] = entry["adapter_family"]
+    first_phase = [
+        inst for inst in adapter_instances
+        if inst["entry"]["adapter_family"] in _FIRST_PHASE_ADAPTERS
+    ]
+    second_phase = [
+        inst for inst in adapter_instances
+        if inst["entry"]["adapter_family"] not in _FIRST_PHASE_ADAPTERS
+    ]
+    for phase_name, instances in (("基础采集", first_phase), ("补充采集", second_phase)):
+        if not instances:
+            continue
+        _report(progress_callback, "采集", {
+            "message": f"{phase_name}: " + ", ".join(
+                inst["entry"]["adapter_family"] for inst in instances
+            ),
+            "sources": source_summary,
+        }, job_id=job_id)
+        phase_docs, phase_summary = _execute_adapter_instances(
+            instances,
+            identity_dict,
+            cancel_token=cancel_token,
+        )
+        all_docs.extend(phase_docs)
+        source_summary.update(phase_summary)
+        _report(progress_callback, "采集", {
+            "message": f"{phase_name}完成: {len(phase_docs)} docs",
+            "sources": source_summary,
+        }, job_id=job_id)
 
-            for future in as_completed(futures):
-                family = futures[future]
-                try:
-                    docs = future.result()
-                    if docs:
-                        all_docs.extend(docs)
-                        source_summary[family] = {
-                            "status": "ok",
-                            "count": len(docs),
-                            "detail": f"{len(docs)} documents",
-                        }
-                except Exception as e:
-                    source_summary[family] = {
-                        "status": "failed",
-                        "count": 0,
-                        "detail": str(e)[:100],
-                    }
+    if _is_cancelled(cancel_token):
+        raise PipelineCancelledError("用户取消研究")
 
     # SPEC v3: 不再回退到传统采集 — FieldDrivenSourcePlanner 是唯一路径
     if not all_docs and not source_summary:
@@ -855,7 +1278,7 @@ def _classify_data_availability(raw: dict) -> str:
 
 
 def _mark_and_log_fields(db_path: str, company_name: str, version: str,
-                         field_rows: list[dict]):
+                         field_rows: list[dict], run_id: str = ""):
     """给 research_fields 行打分辨率标签，写 resolution_logs（失败不阻塞）
 
     P0: 传入 evidence_map，确保 confirmed 只能引用 packed_context 内的 evidence。
@@ -914,7 +1337,7 @@ def _mark_and_log_fields(db_path: str, company_name: str, version: str,
                     fk: (fr.value or "") for fk, fr in resolved.items()
                 }
                 sync_result = syncer.sync_from_llm_result(
-                    company_key, parsed_for_sync, evidence_map, run_id=job_id or ""
+                    company_key, parsed_for_sync, evidence_map, run_id=run_id or ""
                 )
                 if sync_result.get("total_rows", 0) > 0:
                     print(f"[entity_sync] {company_key}: {sync_result['total_rows']} rows "
@@ -955,6 +1378,7 @@ def _bind_posthoc_weak_evidence(db_path: str, company_key: str, company_name: st
                             "github": "developer", "youtube": "media",
                             "media_article": "trusted_media", "press_release": "official",
                             "case_study": "official", "pricing_page": "official",
+                            "whatweb": "database",
                             "search": "search"}
 
         for e in (evidence_pool or [])[:40]:  # 减半到 40 条
@@ -1039,6 +1463,178 @@ def _bind_posthoc_weak_evidence(db_path: str, company_key: str, company_name: st
                   f"{bound_count} weak-bindings created (NOT confirmed)")
     except Exception as e:
         print(f"[posthoc_evidence] bind failed: {e}")
+
+
+def _bind_field_value_evidence(db_path: str, company_key: str, company_name: str,
+                               field_rows: list[dict], chunk_ids: list[int],
+                               run_id: str = "") -> int:
+    """LLM后、分辨率前：用字段值反向匹配chunks，创建强证据绑定。
+
+    与 _bind_posthoc_weak_evidence 的关键区别：
+    - created_by_agent="field_value_matcher"（不被 build_evidence_map 过滤）
+    - confidence=0.55+（高于 0.35 阈值，可进入 confirmed 判定）
+    - 在 _mark_and_log_fields **之前**运行，让分辨率能看到证据
+
+    匹配策略：
+    1. 搜索文本 >= 4 字符且作为子串出现在 chunk 中 → 匹配
+    2. 搜索文本 token 与 chunk token 重叠 >= 2 且 >= 50% → 匹配
+    3. 任一 token >= 4 字符作为子串出现在 chunk 中 → 匹配
+    每个字段最多创建 3 条 evidence_span（不同 chunk）。
+    复杂值（JSON 数组、超长文本、Markdown/HTML、纯数字）先归一化为可搜索文本。
+    """
+    if not chunk_ids or not field_rows:
+        return 0
+
+    try:
+        import sqlite3
+        from research.evidence_extractor import extract_field_evidence
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='document_chunks'"
+        ).fetchone()
+        if not exists:
+            conn.close()
+            return 0
+
+        placeholders = ", ".join("?" for _ in chunk_ids)
+        chunks = conn.execute(
+            f"""SELECT * FROM document_chunks
+                WHERE id IN ({placeholders})
+                AND final_score >= 0.15
+                ORDER BY final_score DESC LIMIT 300""",
+            chunk_ids,
+        ).fetchall()
+
+        if not chunks:
+            conn.close()
+            return 0
+
+        span_ids = []
+        for row in field_rows:
+            field_key = row.get("field_key", "")
+            field_value = str(row.get("field_value", "")).strip()
+            if not field_value or len(field_value) < 2:
+                continue
+            if field_value in ("暂缺", "N/A", "TBD", ""):
+                continue
+
+            # Change 1: 从复杂值中提取可搜索文本
+            searchable_value = _extract_searchable_text(field_value, field_key)
+
+            value_lower = searchable_value.lower()
+            value_tokens = set(value_lower.split())
+
+            if not value_tokens:
+                continue
+
+            span_count_for_field = 0
+            for chunk_row in chunks:
+                chunk = dict(chunk_row)
+                chunk_text = chunk.get("chunk_text", "")
+                if not chunk_text.strip():
+                    continue
+                chunk_lower = chunk_text.lower()
+
+                # 匹配规则
+                matched = False
+                # 规则1: 搜索文本 >= 4 字符且作为子串出现在 chunk 中
+                if len(value_lower) >= 4 and value_lower in chunk_lower:
+                    matched = True
+                # 规则2: token 重叠 >= 2 且 >= 50%
+                elif value_tokens:
+                    chunk_tokens = set(chunk_lower.split())
+                    overlap = len(value_tokens & chunk_tokens)
+                    if overlap >= max(2, len(value_tokens) * 0.5):
+                        matched = True
+                # 规则3 (Change 3): 任一 value token >= 4 字符作为子串出现在 chunk 中
+                if not matched and value_tokens:
+                    for token in value_tokens:
+                        if len(token) >= 4 and token in chunk_lower:
+                            matched = True
+                            break
+
+                if matched:
+                    chunk_score = chunk.get("final_score", 0.35)
+                    confidence = min(0.55 + chunk_score * 0.3, 0.85)
+                    span_id = extract_field_evidence(
+                        db_path,
+                        document_id=chunk["document_id"],
+                        company_key=company_key,
+                        field_key=field_key,
+                        quote_text=chunk_text[:500],
+                        normalized_fact=field_value[:200],
+                        confidence=confidence,
+                        created_by_agent="field_value_matcher",
+                    )
+                    if span_id > 0:
+                        span_ids.append(span_id)
+                        span_count_for_field += 1
+                    # Change 2: 每个字段最多 3 条 evidence_span
+                    if span_count_for_field >= 3:
+                        break
+
+        conn.close()
+
+        if span_ids:
+            print(f"[field_evidence] {company_name}: {len(span_ids)} field-value "
+                  f"evidence bindings created for {len(field_rows)} fields")
+        return len(span_ids)
+    except Exception as e:
+        print(f"[field_evidence] bind failed: {e}")
+        return 0
+
+
+def _extract_searchable_text(field_value: str, field_key: str) -> str:
+    """从复杂字段值中提取可用于匹配的纯文本。
+
+    - JSON 数组: 提取所有字符串值拼接
+    - Markdown/HTML: 去除标签和格式标记
+    - 超长文本 (>200): 截取前 200 字符
+    - 纯数字值: 附加 field_key 中的词作为搜索词
+    """
+    import json
+    import re
+
+    value = field_value.strip()
+
+    # JSON 数组处理: 提取所有字符串值
+    if value.startswith("[") and value.endswith("]"):
+        try:
+            data = json.loads(value)
+            if isinstance(data, list):
+                strings = []
+                for item in data:
+                    if isinstance(item, str):
+                        strings.append(item)
+                    elif isinstance(item, dict):
+                        for v in item.values():
+                            if isinstance(v, str):
+                                strings.append(v)
+                if strings:
+                    value = " ".join(strings)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # 去除 Markdown 和 HTML 标记
+    value = re.sub(r'<[^>]+>', ' ', value)                      # HTML tags
+    value = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', value)      # Markdown links
+    value = re.sub(r'[*_~`#>|]', ' ', value)                     # Markdown formatting
+    value = re.sub(r'\s+', ' ', value).strip()
+
+    # 超长文本截取
+    if len(value) > 200:
+        value = value[:200]
+
+    # 纯数字值附加 field_key 词汇作为搜索词
+    if re.match(r'^[\d\s.,\-–]+$', value):
+        field_words = re.findall(r'[a-zA-Z_]+', field_key)
+        if field_words:
+            value = value + " " + " ".join(field_words)
+
+    return value
 
 
 def _run_forum_moderation(db_path: str, company_name: str, version: str,
@@ -1126,6 +1722,34 @@ def _build_evidence_pool(raw: dict) -> list:
     identity_display = raw.get("display_name", raw.get("company_name", ""))
     identity_host = raw.get("website_host", "")
     identity_root = identity_host.split(".")[0] if identity_host else ""
+
+    # SourceAdapter 文档是当前主采集路径，先保留为 evidence。
+    # 后面的旧 raw 兼容分支只补充 Tavily/GitHub/YouTube/website 遗留结果。
+    for doc in raw.get("_adapter_docs") or []:
+        url = getattr(doc, "source_url", "") or ""
+        title = getattr(doc, "title", "") or ""
+        content = getattr(doc, "content", "") or getattr(doc, "raw_text", "") or ""
+        source = getattr(doc, "source_family", "search") or "search"
+        intent = getattr(doc, "intent", "") or "adapter_collected"
+        if not content.strip():
+            continue
+        fs = evidence_final_score(
+            url, source, title, content[:2000],
+            identity_display, identity_host, identity_root)
+        items.append(EvidenceItem(
+            source=source,
+            intent=intent,
+            title=title,
+            url=url,
+            normalized_url=normalize_url(url),
+            content=content,
+            raw_content=getattr(doc, "raw_text", "") or content,
+            metric_snippet=metric_snippet(content),
+            source_score=getattr(doc, "source_score", evidence_source_score(url, source)),
+            entity_score=getattr(doc, "entity_score", 0.5),
+            final_score=max(fs, getattr(doc, "final_score", 0) or 0),
+            query=intent,
+        ))
 
     # Tavily
     for batch in (raw.get("tavily") or []):
@@ -1345,7 +1969,10 @@ def _run_llm_enum_group(api_key: str, group_name: str, context: str,
         api_key, prompt, context,
         temperature=temperature, max_tokens=200, timeout=60,
     )
-    parsed = _extract_json(result)
+    try:
+        parsed = _extract_json(result)
+    except ValueError:
+        return {}
     if not isinstance(parsed, dict):
         return {}
     # 只保留本组字段
@@ -1459,6 +2086,23 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
     )
     _check_cancel()
 
+    # ── L0 质量门控：校验输出完整性，不通过则阻断 L1/L2/L3 ──
+    try:
+        l0_parsed = _extract_json(l0_result)
+    except ValueError as e:
+        raise L0GateError(
+            f"L0 输出无法解析为 JSON，中止 {company_name} 研究: {e}"
+        )
+    if not isinstance(l0_parsed, dict):
+        raise L0GateError(
+            f"L0 输出不是 JSON 对象 (got {type(l0_parsed).__name__})，中止 {company_name} 研究"
+        )
+    l0_valid, l0_errors = validate_l0_output(l0_parsed)
+    if not l0_valid:
+        raise L0GateError(
+            f"L0 输出不完整，中止 {company_name} 研究: {'; '.join(l0_errors)}"
+        )
+
     # Layer 1
     _report(progress_callback, "L1横纵分析", "横纵分析中...", job_id=job_id)
     l1_prompt = _load_prompt_text("layer1-hv-analysis")
@@ -1505,9 +2149,12 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
             try:
                 l3_result = call_deepseek(
                     api_key, prompt, all_context,
-                    temperature=0.15, max_tokens=16384, timeout=120,
+                    temperature=0.15, max_tokens=16384, timeout=240, max_retries=5,
                 )
-                parsed = _extract_json(l3_result)
+                candidate = _extract_json(l3_result)
+                if not isinstance(candidate, dict):
+                    raise ValueError(f"L3 output must be a JSON object, got {type(candidate).__name__}")
+                parsed = candidate
                 break
             except ValueError as e:
                 if attempt == 0:
@@ -1543,7 +2190,7 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
                 try:
                     retry_result = call_deepseek(
                         api_key, retry_prompt, all_context,
-                        temperature=0.1, max_tokens=16384, timeout=120,
+                        temperature=0.1, max_tokens=16384, timeout=240, max_retries=5,
                     )
                     retry_parsed = _extract_json(retry_result)
                     parsed = _merge_founder_retry(parsed, retry_parsed, missing_founder_fields)
@@ -1664,6 +2311,7 @@ def _find_json_object(text: str) -> str | None:
 def _validate_records(records: list[dict]) -> list[dict]:
     """填充暂缺字段"""
     for rec in records:
+        rec.update(_complete_contract_fields(rec))
         for f in _REQUIRED_FIELDS:
             val = rec.get(f)
             if val is None or (isinstance(val, str) and val.strip() == ""):
@@ -1727,6 +2375,7 @@ def _persist_source_documents_from_raw(raw: dict, run_id: str = "") -> list[int]
                             "github": "developer", "youtube": "media",
                             "media_article": "trusted_media", "press_release": "official",
                             "case_study": "official", "pricing_page": "official",
+                            "whatweb": "database",
                             "search": "search"}
 
         for e in (evidence_pool or [])[:80]:
@@ -1967,7 +2616,8 @@ def _build_packed_context_for_l0(
 
 def run_pipeline(company_name: str, company_url: str,
                  progress_callback=None, job_id: str = None,
-                 cancel_token=None) -> list[int]:
+                 cancel_token=None,
+                 research_options: dict | None = None) -> list[int]:
     """执行完整研究流水线，返回插入的记录 ID 列表"""
     t0 = time.time()
 
@@ -1976,8 +2626,15 @@ def run_pipeline(company_name: str, company_url: str,
             raise PipelineCancelledError("用户取消研究")
 
     # Step 1: 采集
-    raw = _collect_via_adapters(company_name, company_url, progress_callback, job_id=job_id)
+    research_options = research_options or {}
+    raw = _collect_via_adapters(
+        company_name, company_url, progress_callback, job_id=job_id,
+        research_options=research_options,
+        cancel_token=cancel_token,
+    )
+    _check_cancel()
     raw["_evidence_pool"] = _build_evidence_pool(raw)
+    _check_cancel()
     _persist_evidence(company_name, raw["_evidence_pool"])
 
     t1 = time.time()
@@ -1993,7 +2650,12 @@ def run_pipeline(company_name: str, company_url: str,
     _check_cancel()
 
     # P2: 采集审计 + 缺口预补采（LLM 分析之前，确保证据充分）
-    if config.COLLECTION_ENABLE_GAP_REFETCH and "_source_summary" in raw:
+    tavily_enabled = research_options.get("tavily_search", True)
+    if (
+        tavily_enabled
+        and research_options.get("gap_refetch", config.COLLECTION_ENABLE_GAP_REFETCH)
+        and "_source_summary" in raw
+    ):
         src = raw.get("_source_summary", {})
         tavily_src = src.get("tavily", {})
         unique_urls = tavily_src.get("unique_url_count", 0)
@@ -2026,9 +2688,12 @@ def run_pipeline(company_name: str, company_url: str,
 
     # ── 噪音与上下文治理: source_documents → clean → chunk → rank → evidence_spans → pack ──
     company_key = raw.get("company_key", company_name.lower())
-    if config.DOCUMENT_CHUNKING_ENABLED:
+    chunk_ids: list[int] = []
+    if research_options.get("document_chunking", config.DOCUMENT_CHUNKING_ENABLED):
+        _check_cancel()
         _report(progress_callback, "文档治理", "清洗 + 切块 + 打分...", job_id=job_id)
         doc_ids = _persist_source_documents_from_raw(raw, run_id=job_id or "")
+        _check_cancel()
         chunk_ids = _build_document_chunks_for_run(
             company_key, doc_ids,
             display_name=raw.get("display_name", ""),
@@ -2039,7 +2704,10 @@ def run_pipeline(company_name: str, company_url: str,
             span_ids = _extract_evidence_spans_from_chunks(
                 company_key, chunk_ids)
             # 构建 L0 packed_context
-            packed = _build_packed_context_for_l0(raw, company_key, run_id=job_id or "")
+            if research_options.get("context_packer", config.CONTEXT_PACKER_ENABLED):
+                packed = _build_packed_context_for_l0(raw, company_key, run_id=job_id or "")
+            else:
+                packed = {}
             raw["_packed_context"] = packed
             quality_noise = sum(1 for c in packed.get("chunks", [])
                               if c.get("is_noise"))
@@ -2056,6 +2724,7 @@ def run_pipeline(company_name: str, company_url: str,
             raw["_packed_context"] = {}
 
     # Step 2: AI 分析
+    _check_cancel()
     _report(progress_callback, "分析", "开始 4 层 LLM 分析...", job_id=job_id)
     records = llm_analysis(
         company_name, company_url, raw, progress_callback,
@@ -2072,37 +2741,23 @@ def run_pipeline(company_name: str, company_url: str,
     t2 = time.time()
     _report(progress_callback, "分析完成", f"({t2 - t1:.1f}s)", job_id=job_id)
 
-    # P0: CoverageGate 驱动的补采（最多一次，最多4条query）
-    if config.COLLECTION_ENABLE_GAP_REFETCH:
+    # P0: L3 值缺口驱动的补采（最多一次，最多4条query）。
+    # 此时字段还未写库/解析/绑定证据，不能使用证据状态型 CoverageGate。
+    if tavily_enabled and research_options.get("gap_refetch", config.COLLECTION_ENABLE_GAP_REFETCH):
         try:
-            from research.coverage_gate import CoverageGate
-            from research.field_status import _load_manifest
-
-            manifest = _load_manifest()
-            gate = CoverageGate(manifest, card_fields=None)
-
-            # 构建 field_map（从 standard 版本）
             standard = next((r for r in records if r.get("version") == "standard"), None)
-            field_map = {}
-            if standard:
-                for fk, fv in standard.items():
-                    if not fk.startswith("_") and fk not in ("company_name", "version"):
-                        field_map[fk] = fv
+            if not standard:
+                raise RuntimeError("L3 standard 版结果缺失，无法评估补采缺口")
 
-            runtime_sec = time.time() - t0
-            tokens_used = len(raw.get("_packed_context", {}).get("chunks", []))
-            coverage_report = gate.evaluate(field_map, evidence_map={},
-                                           runtime_seconds=runtime_sec,
-                                           tokens_used=tokens_used)
+            l3_gap_report = _evaluate_l3_value_gaps(standard)
+            print(f"[l3_gap] {company_name}: usable={l3_gap_report['usable_field_count']}/"
+                  f"{l3_gap_report['field_count']}, "
+                  f"should_refetch={l3_gap_report['should_refetch']}")
 
-            print(f"[coverage] {company_name}: score={coverage_report.coverage_score:.2f}, "
-                  f"confirmed_ratio={coverage_report.confirmed_ratio:.2f}, "
-                  f"should_refetch={coverage_report.should_refetch}")
-
-            if coverage_report.should_refetch:
+            if l3_gap_report["should_refetch"]:
                 _report(progress_callback, "补采", {
-                    "message": f"CoverageGate触发补采: score={coverage_report.coverage_score:.2f}, "
-                              f"missing={coverage_report.missing_required_fields}",
+                    "message": f"L3关键字段缺失触发补采: "
+                              f"missing={l3_gap_report['missing_required_fields']}",
                 }, job_id=job_id)
 
                 # 生成定向补采 query（最多4条）
@@ -2110,9 +2765,8 @@ def run_pipeline(company_name: str, company_url: str,
                 identity_host = raw.get("website_host", "")
                 identity_root = identity_host.split(".")[0] if identity_host else ""
 
-                gap_fields = coverage_report.missing_required_fields[:8]
+                gap_fields = l3_gap_report["missing_required_fields"][:8]
                 if gap_fields:
-                    from search_plan import TAVILY_QUERY_TEMPLATES
                     gap_queries = []
                     for fk in gap_fields[:4]:  # 最多4条
                         q = f'"{identity_display}" {fk.replace("_", " ")}'
@@ -2125,15 +2779,18 @@ def run_pipeline(company_name: str, company_url: str,
                         _persist_evidence(company_name, raw["_evidence_pool"])
 
                         # 重建文档治理
-                        if config.DOCUMENT_CHUNKING_ENABLED:
+                        if research_options.get("document_chunking", config.DOCUMENT_CHUNKING_ENABLED):
                             doc_ids = _persist_source_documents_from_raw(raw, run_id=job_id or "")
-                            _build_document_chunks_for_run(
+                            chunk_ids = _build_document_chunks_for_run(
                                 company_key, doc_ids,
                                 display_name=raw.get("display_name", ""),
                                 website_host=raw.get("website_host", ""),
                                 aliases=raw.get("aliases", []))
-                            raw["_packed_context"] = _build_packed_context_for_l0(
-                                raw, company_key, run_id=job_id or "")
+                            if research_options.get("context_packer", config.CONTEXT_PACKER_ENABLED):
+                                raw["_packed_context"] = _build_packed_context_for_l0(
+                                    raw, company_key, run_id=job_id or "")
+                            else:
+                                raw["_packed_context"] = {}
 
                         # 重新 L0-L3
                         _report(progress_callback, "分析", "补采后重新 4 层 LLM 分析...", job_id=job_id)
@@ -2151,12 +2808,13 @@ def run_pipeline(company_name: str, company_url: str,
                         raw["_gap_refetch_applied"] = True
                         _report(progress_callback, "分析完成", f"补采后重分析完成", job_id=job_id)
             else:
-                print(f"[coverage] {company_name}: coverage sufficient, no refetch needed")
+                print(f"[l3_gap] {company_name}: required L3 values present, no refetch needed")
                 raw["_gap_refetch_applied"] = False
         except Exception as e:
-            print(f"[coverage] gap refetch evaluation failed (non-fatal): {e}")
+            raise RuntimeError(f"L3 补采缺口评估失败: {e}") from e
 
     # Step 3: 写库
+    _check_cancel()
     _report(progress_callback, "写库", "写入数据库...", job_id=job_id)
     # SPEC v3: 实体表主写入，宽表仅兼容保留。不再写入 research 宽表。
     # 旧代码: ids = database.save_research_records(config.DB_PATH_RESEARCH, records)
@@ -2166,6 +2824,7 @@ def run_pipeline(company_name: str, company_url: str,
     from services.field_service import split_research_to_fields
     from repositories.field_repo import insert_research_fields_batch
     for record in records:
+        _check_cancel()
         version = record.get('version', 'standard')
         field_record = {
             **record,
@@ -2176,11 +2835,21 @@ def run_pipeline(company_name: str, company_url: str,
         field_rows = split_research_to_fields(field_record, version)
         if field_rows:
             insert_research_fields_batch(config.DB_PATH_RESEARCH, field_rows)
+            # LLM后、分辨率前：用字段值匹配chunks创建强证据绑定
+            if chunk_ids:
+                _bind_field_value_evidence(
+                    config.DB_PATH_RESEARCH,
+                    raw.get("company_key", ""),
+                    company_name,
+                    field_rows,
+                    chunk_ids,
+                    run_id=job_id or "",
+                )
             # 字段分辨率状态标记
             _mark_and_log_fields(config.DB_PATH_RESEARCH, company_name,
-                                 version, field_rows)
+                                 version, field_rows, run_id=job_id or "")
             # P0: 事后弱绑定（source_documents → evidence_spans, 不得 confirmed）
-            if config.EVIDENCE_SPAN_BINDING_ENABLED:
+            if research_options.get("evidence_span_binding", config.EVIDENCE_SPAN_BINDING_ENABLED):
                 _bind_posthoc_weak_evidence(
                     config.DB_PATH_RESEARCH,
                     raw.get("company_key", ""),
@@ -2200,9 +2869,10 @@ def run_pipeline(company_name: str, company_url: str,
         try:
             from research.coverage_gate import CoverageGate
             from research.field_status import _load_manifest
+            from research.field_resolver import resolve_all
 
             manifest = _load_manifest()
-            gate = CoverageGate(manifest, card_fields=None)
+            gate = CoverageGate(manifest, card_schema_fields=[])
 
             # 收集所有版本的已解析字段
             all_field_map = {}
@@ -2221,11 +2891,13 @@ def run_pipeline(company_name: str, company_url: str,
                     if fk not in all_field_map or all_field_map[fk] == "暂缺":
                         all_field_map[fk] = fv
 
+            resolved_field_map = resolve_all(all_field_map, manifest, evidence_map={})
+
             runtime_sec = time.time() - t0
             tokens_used = len(raw.get("_packed_context", {}).get("chunks", []))
 
             coverage_report = gate.evaluate(
-                all_field_map, evidence_map={},
+                resolved_field_map, evidence_map={},
                 runtime_seconds=runtime_sec,
                 tokens_used=tokens_used,
             )
@@ -2271,46 +2943,52 @@ def run_pipeline(company_name: str, company_url: str,
             print(f"[card_values] build failed (non-fatal): {e}")
 
     # Step 4: 图片采集
-    def _clean(v, default=""):
-        """过滤 L3 占位符，避免「暂缺」进入图片搜索查询"""
-        if v is None:
-            return default
-        s = str(v).strip()
-        return default if s in ("暂缺", "") else v
+    _check_cancel()
+    if research_options.get("image_collection", True):
+        def _clean(v, default=""):
+            """过滤 L3 占位符，避免「暂缺」进入图片搜索查询"""
+            if v is None:
+                return default
+            s = str(v).strip()
+            return default if s in ("暂缺", "") else v
 
-    standard_record = records[0] if records else {}
-    company_data = {
-        "company_name": company_name,
-        "company_key": raw.get("company_key", ""),
-        "display_name": raw.get("display_name", company_name),
-        "company_url": company_url,
-        "website_url": company_url,
-        "location": _clean(standard_record.get("location")),
-        "other_products": _clean(standard_record.get("other_products"), default=[]),
-        "competitors": _clean(standard_record.get("competitors"), default=[]),
-        "main_product_name": _clean(standard_record.get("main_product_name")),
-        "main_product_img_src": _clean(standard_record.get("main_product_img_src")),
-        "office_photo_hints": _clean(standard_record.get("office_photo_hints"), default={}),
-    }
-    try:
-        from asset_pipeline import collect_image_variants_pipeline
-        image_results = collect_image_variants_pipeline(
-            config.DB_PATH_ASSETS, config.IMAGES_DIR, company_name, company_data,
-            progress_callback=progress_callback, job_id=job_id,
-        )
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print(f"[图片采集异常] {company_name}: {tb}", flush=True)
-        _report(progress_callback, "图片采集",
-                {"message": f"图片采集异常：{e}", "card": 0, "total": 4},
+        standard_record = records[0] if records else {}
+        company_data = {
+            "company_name": company_name,
+            "company_key": raw.get("company_key", ""),
+            "display_name": raw.get("display_name", company_name),
+            "company_url": company_url,
+            "website_url": company_url,
+            "location": _clean(standard_record.get("location")),
+            "other_products": _clean(standard_record.get("other_products"), default=[]),
+            "competitors": _clean(standard_record.get("competitors"), default=[]),
+            "main_product_name": _clean(standard_record.get("main_product_name")),
+            "main_product_img_src": _clean(standard_record.get("main_product_img_src")),
+            "office_photo_hints": _clean(standard_record.get("office_photo_hints"), default={}),
+        }
+        try:
+            from asset_pipeline import collect_image_variants_pipeline
+            image_results = collect_image_variants_pipeline(
+                config.DB_PATH_ASSETS, config.IMAGES_DIR, company_name, company_data,
+                progress_callback=progress_callback, job_id=job_id,
+            )
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[图片采集异常] {company_name}: {tb}", flush=True)
+            _report(progress_callback, "图片采集",
+                    {"message": f"图片采集异常：{e}", "card": 0, "total": 4},
+                    job_id=job_id)
+            image_results = {}
+
+        total_images = sum(image_results.values())
+        _report(progress_callback, "图片采集完成",
+                {"message": f"共 {total_images} 张候选图"},
                 job_id=job_id)
-        image_results = {}
-
-    total_images = sum(image_results.values())
-    _report(progress_callback, "图片采集完成",
-            {"message": f"共 {total_images} 张候选图"},
-            job_id=job_id)
+    else:
+        _report(progress_callback, "图片采集跳过",
+                {"message": "已按研究选项跳过图片采集"},
+                job_id=job_id)
 
     t4 = time.time()
     _report(progress_callback, "完成", f"总耗时 {t4 - t0:.1f}s, IDs: {ids}", job_id=job_id)

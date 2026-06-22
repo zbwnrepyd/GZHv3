@@ -304,3 +304,111 @@ def is_refetchable(field_key: str) -> bool:
     entry = manifest.get(field_key, manifest.get("_default", {}))
     category = entry.get("category", "A")
     return category in ("A", "B", "C")
+
+
+# ── 字段按可获取难度分三类（acquisition tiers）──
+
+TIER_CONFIG: dict[int, dict] = {
+    1: {
+        "label": "公开可采集",
+        "strategy": "web_search + LLM 提取：搜索报告摘要/公司自述/投资机构博客",
+        "category_match": {"C"},
+        "resolution_match": {"market_model"},
+        "default_confidence_level": "estimated",
+        "can_be_verified": True,
+    },
+    2: {
+        "label": "代理指标推算",
+        "strategy": "proxy metrics：SimilarWeb/GitHub/ProductHunt 等多源代理信号 → 估算范围",
+        "category_match": {"D"},
+        "field_specific": {
+            "mau", "mau_as_of", "active_users", "registered_users",
+            "paying_users", "revenue_metrics", "growth_metrics",
+        },
+        "default_confidence_level": "estimated",
+        "can_be_verified": False,
+    },
+    3: {
+        "label": "估算/行业基准",
+        "strategy": "estimation formulas + industry benchmarks："
+                    "LTV≈定价×(1/流失率), CAC从招聘/广告反推，留存率用行业均值兜底",
+        "category_match": {"D"},
+        "field_specific": {
+            "cac", "ltv", "ltv_cac_ratio", "churn_rate", "retention_rate",
+            "retention_definition", "gross_margin", "burn_rate",
+            "runway_months", "arr", "mrr", "ltv_cac_is_benchmark",
+            "ltv_cac_benchmark_source",
+        },
+        "default_confidence_level": "benchmark",
+        "can_be_verified": False,
+    },
+}
+
+
+def classify_acquisition_tier(field_key: str, manifest_entry: dict | None = None) -> int:
+    """根据 field_key 和 manifest 条目判断字段的采集难度层级。
+
+    返回 1 (公开可采集), 2 (代理指标推算), 3 (估算/基准), 或 0 (未知/默认)。
+
+    优先级：manifest category > field_specific 集合匹配
+    Tier 1: C 类 market_model / A 类官方事实 / B 类公式计算
+    Tier 2: D 类用户/MAU 字段 — 可通过 SimilarWeb/GitHub/PH 等代理信号估算
+    Tier 3: D 类 LTV/CAC/留存字段 / E 类 B2B 不适配
+    """
+    if manifest_entry is None:
+        manifest_entry = {}
+
+    category = manifest_entry.get("category", "")
+
+    # Category A/B → Tier 1 (官方事实/公式推导)
+    if category in ("A", "B"):
+        return 1
+
+    # Category C → Tier 1 (市场估算, 公开可采集)
+    if category == "C" or manifest_entry.get("resolution_type") == "market_model":
+        return 1
+
+    # Category E → Tier 3 (B2B 不适配)
+    if category == "E":
+        return 3
+
+    # Category D → sub-classify by field_key
+    if category == "D":
+        t2_fields = TIER_CONFIG[2].get("field_specific", set())
+        if field_key in t2_fields:
+            return 2
+        t3_fields = TIER_CONFIG[3].get("field_specific", set())
+        if field_key in t3_fields:
+            return 3
+        return 0
+
+    # No category — try field_specific matching anyway
+    t2_fields = TIER_CONFIG[2].get("field_specific", set())
+    if field_key in t2_fields:
+        return 2
+    t3_fields = TIER_CONFIG[3].get("field_specific", set())
+    if field_key in t3_fields:
+        return 3
+
+    return 0
+
+
+def get_tier_strategy(tier: int) -> dict:
+    """获取指定 tier 的采集策略配置。"""
+    return TIER_CONFIG.get(tier, {
+        "label": "未知",
+        "strategy": "待定义",
+        "default_confidence_level": "unavailable",
+        "can_be_verified": False,
+    })
+
+
+def get_default_confidence_level(field_key: str,
+                                  manifest_entry: dict | None = None) -> str:
+    """根据字段的采集难度层级返回默认 confidence_level。
+
+    Tier 1 → estimated, Tier 2 → estimated, Tier 3 → benchmark, 未知 → unavailable
+    """
+    tier = classify_acquisition_tier(field_key, manifest_entry)
+    cfg = get_tier_strategy(tier)
+    return cfg.get("default_confidence_level", "unavailable")

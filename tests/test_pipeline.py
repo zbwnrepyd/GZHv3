@@ -372,7 +372,15 @@ class PipelineFailureTests(unittest.TestCase):
 
         l0_valid_json = json.dumps({
             "company_name": "DemoCo",
-            "company_def": "An AI tools company founded by Ada Demo, an MIT graduate who previously founded Demo Labs and won industry awards. The company provides innovative solutions for the enterprise market with a focus on automation and productivity.",
+            "company_def": (
+                "An AI tools company founded by Ada Demo, an MIT graduate who previously "
+                "founded Demo Labs and won industry awards. The company provides innovative "
+                "solutions for the enterprise market with a focus on automation and "
+                "productivity. Their flagship product DemoTool serves thousands of customers "
+                "worldwide and has been recognized as a leader in the AI-powered developer "
+                "tools space by multiple industry analysts. The company operates on a SaaS "
+                "business model with annual recurring revenue exceeding benchmarks for its stage."
+            ),
             "main_product_name": "DemoTool",
             "founded_date": "2020",
             "company_type": "AI工具",
@@ -426,39 +434,39 @@ class PipelineFailureTests(unittest.TestCase):
     def test_l3_main_retries_and_records_error_for_non_object_json(self):
         l0_valid_json = json.dumps({
             "company_name": "DemoCo",
-            "company_def": "An AI company providing developer tools for the modern web. Founded with a mission to simplify software development workflows across teams.",
+            "company_def": (
+                "An AI company providing developer tools for the modern web. Founded with "
+                "a mission to simplify software development workflows across teams of all "
+                "sizes. The platform offers integrated CI/CD, monitoring, and collaboration "
+                "features designed to accelerate deployment velocity while maintaining "
+                "enterprise-grade security and reliability standards across cloud and on-premise "
+                "environments worldwide. The company serves Fortune 500 enterprises."
+            ),
             "main_product_name": "DemoTool",
             "founded_date": "2021",
         }, ensure_ascii=False)
+
+        # Split-L3 path: A/B return valid empty objects, C returns non-object JSON.
+        # C is retried once; after second attempt it raises RuntimeError (blocking).
         responses = [
-            l0_valid_json,
-            "layer1",
-            "layer2",
-            '"not an object"',
-            '"still not an object"',
-            '"not an object"',
-            '"still not an object"',
-            '"not an object"',
-            '"still not an object"',
+            l0_valid_json,       # L0
+            "layer1",             # L1
+            "layer2",             # L2
+            # standard version — A/B valid, C returns non-object twice
+            "{}",                 # A
+            "{}",                 # B
+            '"not an object"',    # C attempt 1
+            '"still not valid"',  # C attempt 2 → RuntimeError
         ]
 
-        # Force fallback path: new group prompts raise FileNotFoundError,
-        # so use_split_l3 stays False and old single-L3 path runs.
-        def _mock_load_prompt(name):
-            if name.startswith("layer3-group-"):
-                raise FileNotFoundError(f"Prompt file not found: prompts/{name}.md")
-            return "prompt {{VERSION}}"
-
-        with patch.object(pipeline, "_load_prompt_text", side_effect=_mock_load_prompt), \
-             patch.object(pipeline, "call_deepseek", side_effect=responses):
-            records = pipeline.llm_analysis(
-                "DemoCo",
-                "https://demo.example",
-                {"website": {"text": "demo"}},
-            )
-
-        self.assertEqual(len(records), 3)
-        self.assertTrue(all(record.get("_error") for record in records))
+        with patch.object(pipeline, "call_deepseek", side_effect=responses):
+            with self.assertRaises(RuntimeError) as ctx:
+                pipeline.llm_analysis(
+                    "DemoCo",
+                    "https://demo.example",
+                    {"website": {"text": "demo"}},
+                )
+            self.assertIn("L3-C", str(ctx.exception))
 
     def test_collection_source_summary_counts_success_and_failures(self):
         tavily = pipeline._summarize_collection_source(

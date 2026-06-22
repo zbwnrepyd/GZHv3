@@ -41,3 +41,29 @@ Layer 0 清洗后的结构化信息。
 ```
 
 每个字符串字段 150-300 字。基于事实，不要推测。
+
+## 输出格式
+
+输出严格的 JSON，不要包含 markdown 代码块标记（如 ```json），不要添加额外解释：
+
+{
+  "competitors": [
+    {
+      "name": "竞品名",
+      "url": "竞品官网（无则为 null）",
+      "overlap_areas": ["重叠领域1", "重叠领域2"],
+      "strengths": ["核心优势1", "核心优势2"],
+      "weaknesses": ["弱点或差异化空间1", "弱点或差异化空间2"],
+      "threat_level": "high|medium|low",
+      "evidence_snippets": ["来自原始上下文的原文引用，≤100字符"]
+    }
+  ],
+  "target_company_position": "leader|strong_contender|niche_player|early_stage",
+  "competitive_landscape_summary": "≤100字符的竞争格局一句话总结"
+}
+
+要求：
+- competitors 至少 2 个，最多 6 个
+- 每个竞品至少 1 条 evidence_snippet，直接引用原文（不得编造）
+- threat_level：high=直接正面竞争且体量相当或更大，medium=有重叠但定位不同，low=间接竞争或体量显著小
+- target_company_position：leader=赛道第一，strong_contender=前三且有差异化，niche_player=专注细分，early_stage=刚起步

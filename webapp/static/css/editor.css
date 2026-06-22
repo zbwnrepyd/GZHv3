@@ -114,6 +114,56 @@ input, button, select, textarea { font: inherit; }
   height: 36px; border: 1px solid var(--border); border-radius: var(--radius);
   padding: 0 12px; background: var(--white);
 }
+.research-options-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #FAFBFC;
+  padding: 12px;
+}
+.research-options-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 10px;
+}
+.research-options-title {
+  color: var(--navy); font-size: 13px; font-weight: 800;
+}
+.research-options-head p {
+  color: var(--text-muted); font-size: 12px; margin-top: 2px;
+}
+.research-options-grid {
+  display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 10px;
+}
+.research-option-group {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px;
+  min-width: 0; padding: 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-1);
+}
+.research-option-group-title {
+  grid-column: 1 / -1; color: var(--text-subtle); font-size: 11px;
+  font-weight: 800; margin-bottom: 1px;
+}
+.research-toggle {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 7px;
+  min-width: 0; cursor: pointer; user-select: none;
+}
+.research-toggle input {
+  position: absolute; opacity: 0; pointer-events: none;
+}
+.research-toggle span {
+  position: relative; width: 30px; height: 17px; border-radius: 999px;
+  background: #D8DEE8; transition: background .15s ease;
+}
+.research-toggle span::after {
+  content: ""; position: absolute; left: 2px; top: 2px;
+  width: 13px; height: 13px; border-radius: 50%; background: var(--white);
+  box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: transform .15s ease;
+}
+.research-toggle input:checked + span { background: var(--cyan); }
+.research-toggle input:checked + span::after { transform: translateX(13px); }
+.research-toggle strong {
+  min-width: 0; color: var(--text); font-size: 12px; font-weight: 700;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .progress-shell {
   border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
   background: #FAFBFC;
@@ -207,6 +257,12 @@ input, button, select, textarea { font: inherit; }
 .source-skipped { border-color: #E8D5B0; background: #FFFBF4; }
 .source-skipped .source-badge { background: #FFF3E0; color: #8B6914; }
 .source-empty .source-badge { background: #EEF2F6; color: var(--text-muted); }
+.source-not_configured { border-color: #D5DDE5; background: #FBFCFD; }
+.source-not_configured .source-badge { background: #EEF2F6; color: #7C8B9E; }
+.source-disabled { border-color: #E5E8EC; background: #FDFDFD; }
+.source-disabled .source-badge { background: #F0F2F5; color: #9CA3AF; }
+.source-not_applicable { border-color: #E5E8EC; background: #FDFDFD; }
+.source-not_applicable .source-badge { background: #F0F2F5; color: #9CA3AF; }
 .research-complete { margin-top: auto; }
 .company-library {
   padding: 20px 28px;
@@ -257,6 +313,8 @@ input, button, select, textarea { font: inherit; }
 .completeness.low { background: #FFEBEE; color: #C62828; }
 
 @media (max-width: 900px) {
+  .research-inputs { grid-template-columns: 1fr; align-items: stretch; }
+  .research-options-grid { grid-template-columns: 1fr; }
   .source-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .detail-fact-grid { grid-template-columns: 1fr; }
 }
@@ -532,6 +590,21 @@ input, button, select, textarea { font: inherit; }
 .res-manual_needed { background: #fee2e2; color: #dc2626; }
 .res-not_applicable { background: #e5e7eb; color: #6b7280; }
 
+/* ── 置信度徽章 ─────────────────────────────────────────── */
+.confidence-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+  font-weight: 500;
+}
+.badge-verified    { background: #e6f7e6; color: #1a7a1a; }
+.badge-estimated   { background: #fff8e1; color: #b8860b; }
+.badge-benchmark   { background: #e8e8e8; color: #666; }
+.badge-unavailable { background: #fff0f0; color: #c00; border: 1px solid #fdd; }
+
 /* ── 卡片设置面板（cs-*）─────────────────────────── */
 #card-settings-mode-content,
 #text-finalize-mode-content {
@@ -675,6 +748,26 @@ input, button, select, textarea { font: inherit; }
   text-align: center; padding: 40px 20px;
   color: var(--text-muted); font-size: 14px; line-height: 1.8;
 }
+
+/* 待补字段列表 */
+.tf-pending-fields {
+  margin-top: 20px; padding: 14px 16px;
+  background: #fafafa; border: 1px solid #e8e8e8;
+  border-radius: 6px;
+}
+.tf-pending-summary {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+  cursor: pointer; user-select: none; margin-bottom: 10px;
+}
+.tf-pending-list { margin: 0; padding: 0; list-style: none; }
+.tf-pending-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-radius: 4px;
+  font-size: 13px;
+}
+.tf-pending-row + .tf-pending-row { border-top: 1px solid #eeeeee; }
+.tf-pending-label { color: var(--navy); }
+.tf-pending-hint { font-size: 11px; color: #bbb; }
 
 .tf-fields { display: flex; flex-direction: column; gap: 14px; }
 

@@ -3,6 +3,20 @@
 
 const VERSION_LABELS_TF = { standard: '标准版', business: '商业版', spread: '传播版' };
 
+// Confidence level badge config
+const CONFIDENCE_BADGES = {
+  verified:    { label: '✓ 已验证',   css: 'badge-verified' },
+  estimated:   { label: '≈ 估算',     css: 'badge-estimated' },
+  benchmark:   { label: 'ⓘ 行业基准', css: 'badge-benchmark' },
+  unavailable: { label: '— 未公开',   css: 'badge-unavailable' },
+};
+
+function renderConfidenceBadge(confidenceLevel) {
+  const cfg = CONFIDENCE_BADGES[confidenceLevel];
+  if (!cfg) return '';
+  return '<span class="confidence-badge ' + cfg.css + '">' + cfg.label + '</span>';
+}
+
 const TextFinalizePanel = {
   _company: '',
   _cards: [],
@@ -39,6 +53,7 @@ const TextFinalizePanel = {
             versions: f.versions || {},
             final_value: f.final_value || '',
             status: f.status || 'draft',
+            confidence_level: f.confidence_level || '',
           };
         });
       });
@@ -88,8 +103,8 @@ const TextFinalizePanel = {
   _cardTab(card) {
     const active = card.card_id === this._activeCardId ? ' active' : '';
     const items = card.items || [];
-    const fieldCount = items.filter(i => i.item_type === 'field').length;
     const cardFields = items.filter(i => i.item_type === 'field');
+    const fieldCount = cardFields.filter(i => this._hasUsableField(i.item_key)).length;
     const confirmed = cardFields.every(i => (this._fieldsByKey[i.item_key] || {}).status === 'confirmed');
     const dot = cardFields.length ? (confirmed ? '·' : '○') : '';
     return `
@@ -106,6 +121,8 @@ const TextFinalizePanel = {
 
     const items = card.items || [];
     const fieldItems = items.filter(i => i.item_type === 'field');
+    const usableItems = fieldItems.filter(i => this._hasUsableField(i.item_key));
+    const pendingItems = fieldItems.filter(i => !this._hasUsableField(i.item_key) && this._fieldsByKey[i.item_key]);
 
     if (!fieldItems.length) {
       return `<div class="tf-card-empty">
@@ -117,11 +134,28 @@ const TextFinalizePanel = {
     return `
       <div class="tf-card-header">
         <h3 class="tf-card-name">${this._esc(card.card_title)}</h3>
-        <span class="tf-card-subtitle">${fieldItems.length} 个字段 · 下方逐个定稿</span>
+        <span class="tf-card-subtitle">${usableItems.length} 个可定稿字段${pendingItems.length ? ` · ${pendingItems.length} 个待补` : ''}</span>
       </div>
       <div class="tf-fields">
-        ${fieldItems.map(item => this._fieldCard(item, card)).join('')}
-      </div>`;
+        ${usableItems.map(item => this._fieldCard(item, card)).join('')}
+      </div>
+      ${pendingItems.length ? this._pendingFieldsBlock(pendingItems) : ''}`;
+  },
+
+  _pendingFieldsBlock(items) {
+    return `
+      <details class="tf-pending-fields" open>
+        <summary class="tf-pending-summary">待补字段 · ${items.length} 项</summary>
+        <ul class="tf-pending-list">
+          ${items.map(item => {
+            const f = this._fieldsByKey[item.item_key] || {};
+            return `<li class="tf-pending-row">
+              <span class="tf-pending-label">${this._esc(f.label || item.item_key)}</span>
+              <span class="tf-pending-hint">待研究数据</span>
+            </li>`;
+          }).join('')}
+        </ul>
+      </details>`;
   },
 
   _fieldCard(item, card) {
@@ -132,11 +166,13 @@ const TextFinalizePanel = {
     const finalVal = f.final_value || '';
     const confirmed = f.status === 'confirmed';
     const hasVersions = Object.keys(versions).length > 0;
+    const hasFinalValue = this._isUsableValue(finalVal);
 
     return `
       <div class="tf-field-card ${confirmed ? 'confirmed' : ''}" data-field="${item.item_key}">
         <div class="tf-field-head">
           <span class="tf-field-label">${this._esc(f.label)}</span>
+          ${renderConfidenceBadge(f.confidence_level)}
           <span class="tf-field-role">${this._esc(item.display_role || 'body')}</span>
           <span class="tf-field-dot ${confirmed ? 'confirmed' : 'draft'}" title="${confirmed ? '已定稿' : '未定稿'}"></span>
         </div>
@@ -150,7 +186,7 @@ const TextFinalizePanel = {
               <p class="tf-ver-text">${this._esc(val)}</p>
             </div>
           `).join('')}
-        </div>` : '<p class="tf-empty-hint">暂无研究数据</p>'}
+        </div>` : (hasFinalValue ? '' : '<p class="tf-empty-hint">暂无研究数据</p>')}
 
         <div class="tf-final-area">
           <textarea class="tf-final-input" data-field="${item.item_key}" rows="2"
@@ -158,6 +194,19 @@ const TextFinalizePanel = {
           <button class="tf-save-btn" data-field-key="${item.item_key}">保存</button>
         </div>
       </div>`;
+  },
+
+  _hasUsableField(fieldKey) {
+    const f = this._fieldsByKey[fieldKey];
+    if (!f) return false;
+    if (this._isUsableValue(f.final_value)) return true;
+    return Object.values(f.versions || {}).some(v => this._isUsableValue(v));
+  },
+
+  _isUsableValue(value) {
+    if (value === null || value === undefined) return false;
+    const s = String(value).trim();
+    return !['', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{}'].includes(s);
   },
 
   _bindRowEvents() {

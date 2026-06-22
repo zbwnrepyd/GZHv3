@@ -21,7 +21,8 @@ _VALUE_TYPE_BY_CONTRACT_TYPE = {
 
 _V3_PAGE_FIELDS = {
     1: ["company_name", "company_type"],
-    2: ["market_landscape_summary", "market_landscape_top_players",
+    2: ["market_track", "market_subtrack",
+        "market_landscape_summary", "market_landscape_top_players",
         "market_size_value", "market_size_currency", "market_size_year",
         "market_cagr", "tam_value", "tam_currency", "tam_year",
         "location", "founded_date", "core_business", "core_competency",
@@ -51,6 +52,37 @@ _FIELD_PAGE_META = {
     for page_no, fields in _V3_PAGE_FIELDS.items()
     for sort_order, field_key in enumerate(fields)
 }
+
+_PLACEHOLDER_VALUES = {"", "暂缺", "None", "none", "null", "NULL", "[]", "{}"}
+
+# Status → confidence_level mapping (mirrors render_assembler._STATUS_TO_CONFIDENCE_LEVEL)
+_STATUS_TO_CONFIDENCE_LEVEL = {
+    "confirmed": "verified",
+    "derived": "estimated",
+    "proxy": "estimated",
+    "industry_avg": "benchmark",
+    "llm_extracted": "estimated",
+    "llm_located": "estimated",
+    "manual_needed": "unavailable",
+    "unavailable": "unavailable",
+    "not_applicable": "unavailable",
+    "conflict": "estimated",
+    "draft": "unavailable",
+    "hidden": "unavailable",
+}
+
+
+def _map_status_to_confidence_level(status: str) -> str:
+    """Map internal resolution status to user-facing confidence_level."""
+    if not status:
+        return "unavailable"
+    return _STATUS_TO_CONFIDENCE_LEVEL.get(status, "unavailable")
+
+
+def _is_usable_value(value) -> bool:
+    if value is None:
+        return False
+    return str(value).strip() not in _PLACEHOLDER_VALUES
 
 
 def load_field_contract() -> dict:
@@ -94,32 +126,50 @@ def split_research_to_fields(research_row: dict, version: str = "standard") -> l
 
 
 def get_field_versions(db_path_research: str, company_name: str) -> dict[str, dict[str, str]]:
-    """返回 {field_key: {standard: "...", business: "...", spread: "..."}}"""
+    """返回 {field_key: {standard: "...", business: "...", spread: "..."}}
+
+    包含所有版本（即使值为空），让前端决定显示策略。
+    json_text 字段的 [] / {} 是合法 LLM 返回，不应在后端过滤。
+    """
     versions = {}
     for ver in ("standard", "business", "spread"):
         fields = get_research_fields(db_path_research, company_name, ver)
         for f in fields:
-            versions.setdefault(f["field_key"], {})[ver] = f.get("field_value", "")
+            value = f.get("field_value", "")
+            if value is not None and str(value).strip() not in ("",):
+                versions.setdefault(f["field_key"], {})[ver] = value
     return versions
 
 
 def get_fields_with_versions(db_path_research: str, db_path_final: str,
-                             company_name: str) -> list[dict]:
+                             company_name: str,
+                             card_values_db_path: Optional[str] = None) -> list[dict]:
     """返回完整的字段列表（含三版本 + 定稿状态）。
 
     定稿值优先级: final_card_values (SPEC v3 主读模型) → final_fields (向后兼容)。
     """
     contract = load_field_contract()
     versioned = get_field_versions(db_path_research, company_name)
+    research_rows = []
+    for ver in ("standard", "business", "spread"):
+        research_rows.extend(get_research_fields(db_path_research, company_name, ver))
     final_fields = {f["field_key"]: f for f in get_final_fields(db_path_final, company_name)}
 
     # SPEC v3: 加载 final_card_values 按 field_key 索引（取首张卡的值）
     card_value_map: dict[str, dict] = {}
     try:
-        for cv in get_final_card_values(db_path_final, company_name.lower()):
-            fk = cv.get("field_key", "")
-            if fk and fk not in card_value_map:
-                card_value_map[fk] = cv
+        card_values_db = card_values_db_path or db_path_final
+        candidate_keys = [company_name.lower()]
+        for row in research_rows:
+            ckey = str(row.get("company_key") or "").strip()
+            if ckey and ckey not in candidate_keys:
+                candidate_keys.insert(0, ckey)
+        for company_key in candidate_keys:
+            for cv in get_final_card_values(card_values_db, company_key):
+                fk = cv.get("field_key", "")
+                value = cv.get("field_value") or cv.get("final_value")
+                if fk and fk not in card_value_map and _is_usable_value(value):
+                    card_value_map[fk] = cv
     except Exception:
         pass
 
@@ -134,7 +184,12 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
 
             # SPEC v3: card_value 优先作为 final_value
             cv_value = cv.get("field_value") or cv.get("final_value")
-            final_value = cv_value if cv_value is not None else final.get("final_value", vers.get("standard", ""))
+            if _is_usable_value(cv_value):
+                final_value = cv_value
+            elif _is_usable_value(final.get("final_value")):
+                final_value = final.get("final_value")
+            else:
+                final_value = vers.get("standard", "")
 
             # SPEC v3: resolution_status 优先，回退 final_fields status
             cv_status = cv.get("resolution_status") or cv.get("status")
@@ -150,6 +205,7 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
                 "status": final_status,
                 "card_no": cv.get("card_no"),  # 该值所属卡片页码
                 "confidence": cv.get("confidence_score") or cv.get("confidence"),
+                "confidence_level": _map_status_to_confidence_level(final_status),
             })
         if group_fields:
             result.append({

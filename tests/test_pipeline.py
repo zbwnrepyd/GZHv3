@@ -378,18 +378,29 @@ class PipelineFailureTests(unittest.TestCase):
             "company_type": "AI工具",
         }, ensure_ascii=False)
 
+        # New split-L3 path: each version needs A+B+C+founder = 4 calls,
+        # plus L0+L1+L2 = 15 total.  A/B return empty-object JSON; C carries
+        # the actual record (with missing founder fields); founder retry
+        # returns the filled-in record.
+        empty_obj = "{}"
         responses = [
-            l0_valid_json,                                                 # L0 (valid JSON passing gate)
+            l0_valid_json,                                                 # L0
             "layer1",                                                       # L1
             "layer2",                                                       # L2
             # ── standard 版本 ──
-            str(record()).replace("'", '"'),                                # L3
+            empty_obj,                                                      # A
+            empty_obj,                                                      # B
+            str(record()).replace("'", '"'),                                # C
             str(record("MIT", "创办 Demo Labs，获行业奖项")).replace("'", '"'),  # founder
             # ── business 版本 ──
-            str(record()).replace("'", '"'),                                # L3
+            empty_obj,                                                      # A
+            empty_obj,                                                      # B
+            str(record()).replace("'", '"'),                                # C
             str(record("MIT", "创办 Demo Labs")).replace("'", '"'),         # founder
             # ── spread 版本 ──
-            str(record()).replace("'", '"'),                                # L3
+            empty_obj,                                                      # A
+            empty_obj,                                                      # B
+            str(record()).replace("'", '"'),                                # C
             str(record("MIT", "创办 Demo Labs")).replace("'", '"'),         # founder
         ]
         events = []
@@ -403,8 +414,9 @@ class PipelineFailureTests(unittest.TestCase):
                 lambda stage, detail: events.append((stage, detail)),
             )
 
-        self.assertEqual(call.call_count, 9)
-        for index in (3, 5, 7):
+        self.assertEqual(call.call_count, 15)
+        # C calls use timeout=240 / max_retries=5 (indices 5, 9, 13)
+        for index in (5, 9, 13):
             self.assertEqual(call.call_args_list[index].kwargs["timeout"], 240)
             self.assertEqual(call.call_args_list[index].kwargs["max_retries"], 5)
         self.assertEqual(records[0]["founder_edu"], "MIT")
@@ -430,7 +442,14 @@ class PipelineFailureTests(unittest.TestCase):
             '"still not an object"',
         ]
 
-        with patch.object(pipeline, "_load_prompt_text", return_value="prompt {{VERSION}}"), \
+        # Force fallback path: new group prompts raise FileNotFoundError,
+        # so use_split_l3 stays False and old single-L3 path runs.
+        def _mock_load_prompt(name):
+            if name.startswith("layer3-group-"):
+                raise FileNotFoundError(f"Prompt file not found: prompts/{name}.md")
+            return "prompt {{VERSION}}"
+
+        with patch.object(pipeline, "_load_prompt_text", side_effect=_mock_load_prompt), \
              patch.object(pipeline, "call_deepseek", side_effect=responses):
             records = pipeline.llm_analysis(
                 "DemoCo",

@@ -2112,6 +2112,20 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
     )
     _check_cancel()
 
+    # ── L1 竞品矩阵提取 ──
+    competitive_matrix = None
+    try:
+        l1_parsed = _extract_json(l1_result)
+        from research.competitive_matrix import CompetitiveMatrixExtractor
+        cm_extractor = CompetitiveMatrixExtractor()
+        l1_matrix, l1_errors = cm_extractor.validate(l1_parsed)
+        if l1_matrix:
+            competitive_matrix = l1_matrix
+        elif l1_errors:
+            print(f"[L1 matrix] validation warnings: {'; '.join(l1_errors[:3])}")
+    except Exception as e:
+        print(f"[L1 matrix] extract failed (non-blocking): {e}")
+
     # Layer 2
     _report(progress_callback, "L2商业结构", "商业结构分析中...", job_id=job_id)
     l2_prompt = _load_prompt_text("layer2-business")
@@ -2122,6 +2136,20 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
     )
     _check_cancel()
 
+    # ── L2 商业模式画布提取 ──
+    business_canvas = None
+    try:
+        l2_parsed = _extract_json(l2_result)
+        from research.business_canvas import BusinessCanvasExtractor
+        bc_extractor = BusinessCanvasExtractor()
+        l2_canvas, l2_errors = bc_extractor.validate(l2_parsed)
+        if l2_canvas:
+            business_canvas = l2_canvas
+        elif l2_errors:
+            print(f"[L2 canvas] validation warnings: {'; '.join(l2_errors[:3])}")
+    except Exception as e:
+        print(f"[L2 canvas] extract failed (non-blocking): {e}")
+
     # Layer 3 — 3 版本
     l3_prompt_template = _load_prompt_text("layer3-field-extraction")
     all_context = json.dumps(
@@ -2129,41 +2157,156 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
         ensure_ascii=False, indent=2,
     )
 
+    # ── MarketDataBridge: 注入已知市场数据 ──
+    try:
+        from research.market_data_bridge import MarketDataBridge
+        bridge = MarketDataBridge()
+        all_context = bridge.inject_into_l3_context(
+            raw_data.get("company_key", company_name.lower()), all_context)
+    except Exception as e:
+        print(f"[MarketDataBridge] inject failed (non-blocking): {e}")
+
     versions = [
         ("standard", "标准版：客观完整，数据优先，适合事实核查。用词严谨，多引用具体数据。要求：语气客观中立，强调数据可靠性和来源可验证性。"),
         ("business", "商业版：强调价值判断，投资人/同行视角。突出商业潜力和竞争分析。要求：语气专业但有判断力，关注估值空间、市场空间、竞争壁垒。"),
         ("spread", "传播版：高钩子密度，语言有张力，自媒体友好。要求：开头要有强钩子，用数据制造冲击感。金句化表达关键洞察。适合大众传播。"),
     ]
 
+    # ── 尝试加载分组 L3 Prompt（不存在时回退旧 Prompt） ──
+    use_split_l3 = False
+    try:
+        l3a_prompt_base = _load_prompt_text("layer3-group-facts")
+        l3b_prompt_base = _load_prompt_text("layer3-group-market")
+        l3c_prompt_base = _load_prompt_text("layer3-group-operating")
+        use_split_l3 = True
+    except FileNotFoundError:
+        pass
+
     all_records = []
     for ver_name, ver_inst in versions:
         _report(progress_callback, f"L3-{ver_name}", f"提取 {ver_name} 版...", job_id=job_id)
-        prompt = l3_prompt_template
-        for placeholder, value in [("{{VERSION}}", ver_name),
-                                    ("{{VERSION_INSTRUCTIONS}}", ver_inst),
-                                    ("{{VERSION_SPECIFIC}}", ver_inst)]:
-            prompt = prompt.replace(placeholder, value)
 
-        parsed = None
-        for attempt in range(2):
+        # Initialise context/prompt refs for founder-retry path below
+        l3c_prompt = None  # only set in split-l3 path
+        c_context = None   # only set in split-l3 path
+
+        if use_split_l3:
+            # ── L3 分组并行（A+B 并行 → C 串行）──
+            import concurrent.futures
+
+            ver_prefix = f"\n\n## 版本要求（{ver_name}）\n{ver_inst}"
+            l3a_prompt = l3a_prompt_base + ver_prefix
+            l3b_prompt = l3b_prompt_base + ver_prefix
+            l3c_prompt = l3c_prompt_base + ver_prefix
+
+            # A context: L0 only
+            a_context = json.dumps({"layer0": l0_result}, ensure_ascii=False, indent=2)
+
+            # B context: L0 + L1 matrix
+            b_context = all_context
+            if competitive_matrix:
+                b_context += "\n\n## L1 竞品矩阵\n" + json.dumps(
+                    competitive_matrix.model_dump(), ensure_ascii=False, indent=2)
+
+            # Run A + B in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as l3exec:
+                future_a = l3exec.submit(
+                    call_deepseek, api_key, l3a_prompt, a_context,
+                    temperature=0.15, max_tokens=4096, timeout=120)
+                future_b = l3exec.submit(
+                    call_deepseek, api_key, l3b_prompt, b_context,
+                    temperature=0.15, max_tokens=4096, timeout=120)
+                l3a_result = future_a.result()
+                l3b_result = future_b.result()
+
+            _check_cancel()
+
+            # Parse A and B — failures are blocking
             try:
-                l3_result = call_deepseek(
-                    api_key, prompt, all_context,
-                    temperature=0.15, max_tokens=16384, timeout=240, max_retries=5,
-                )
-                candidate = _extract_json(l3_result)
-                if not isinstance(candidate, dict):
-                    raise ValueError(f"L3 output must be a JSON object, got {type(candidate).__name__}")
-                parsed = candidate
-                break
+                l3a_parsed = _extract_json(l3a_result) if l3a_result else {}
             except ValueError as e:
-                if attempt == 0:
-                    _report(progress_callback, f"L3-{ver_name}", f"JSON修复失败，重试...", job_id=job_id)
-                    retry_msg = f"上一次输出 JSON 无法解析：{e}\n请确保输出合法 JSON（检查逗号、引号、转义）。"
-                    prompt = prompt + "\n\n" + retry_msg
-                else:
-                    all_records.append({"company_name": company_name, "version": ver_name, "_error": str(e)})
+                raise RuntimeError(
+                    f"L3-A ({ver_name}) 输出无法解析为 JSON: {e}") from e
+            try:
+                l3b_parsed = _extract_json(l3b_result) if l3b_result else {}
+            except ValueError as e:
+                raise RuntimeError(
+                    f"L3-B ({ver_name}) 输出无法解析为 JSON: {e}") from e
+
+            if not isinstance(l3a_parsed, dict) or not isinstance(l3b_parsed, dict):
+                raise RuntimeError(
+                    f"L3-A 或 L3-B ({ver_name}) 输出不是 JSON 对象 "
+                    f"(A={type(l3a_parsed).__name__}, B={type(l3b_parsed).__name__})")
+
+            # C context: everything
+            c_context = all_context
+            if competitive_matrix:
+                c_context += "\n\n## L1 竞品矩阵\n" + json.dumps(
+                    competitive_matrix.model_dump(), ensure_ascii=False, indent=2)
+            if business_canvas:
+                c_context += "\n\n## L2 商业模式画布\n" + json.dumps(
+                    business_canvas.model_dump(), ensure_ascii=False, indent=2)
+            c_context += "\n\n## L3-A 基础事实\n" + (l3a_result or "")
+            c_context += "\n\n## L3-B 市场数据\n" + (l3b_result or "")
+
+            # Run C with retry
+            parsed = None
+            for attempt in range(2):
+                try:
+                    l3c_result = call_deepseek(
+                        api_key, l3c_prompt, c_context,
+                        temperature=0.15, max_tokens=16384, timeout=240, max_retries=5,
+                    )
+                    l3c_parsed = _extract_json(l3c_result)
+                    if not isinstance(l3c_parsed, dict):
+                        raise ValueError(
+                            f"L3-C output must be a JSON object, got {type(l3c_parsed).__name__}")
+                    # Merge A + B + C
+                    merged = {}
+                    merged.update(l3a_parsed)
+                    merged.update(l3b_parsed)
+                    merged.update(l3c_parsed)
+                    parsed = merged
                     break
+                except ValueError as e:
+                    if attempt == 0:
+                        _report(progress_callback, f"L3-{ver_name}",
+                                f"JSON修复失败，重试...", job_id=job_id)
+                        retry_msg = f"上一次输出 JSON 无法解析：{e}\n请确保输出合法 JSON（检查逗号、引号、转义）。"
+                        l3c_prompt = l3c_prompt + "\n\n" + retry_msg
+                    else:
+                        raise RuntimeError(
+                            f"L3-C ({ver_name}) 提取失败: {e}") from e
+        else:
+            # ── 旧版单次 L3 调用（回退路径）──
+            prompt = l3_prompt_template
+            for placeholder, value in [("{{VERSION}}", ver_name),
+                                        ("{{VERSION_INSTRUCTIONS}}", ver_inst),
+                                        ("{{VERSION_SPECIFIC}}", ver_inst)]:
+                prompt = prompt.replace(placeholder, value)
+
+            parsed = None
+            for attempt in range(2):
+                try:
+                    l3_result = call_deepseek(
+                        api_key, prompt, all_context,
+                        temperature=0.15, max_tokens=16384, timeout=240, max_retries=5,
+                    )
+                    candidate = _extract_json(l3_result)
+                    if not isinstance(candidate, dict):
+                        raise ValueError(
+                            f"L3 output must be a JSON object, got {type(candidate).__name__}")
+                    parsed = candidate
+                    break
+                except ValueError as e:
+                    if attempt == 0:
+                        _report(progress_callback, f"L3-{ver_name}",
+                                f"JSON修复失败，重试...", job_id=job_id)
+                        retry_msg = f"上一次输出 JSON 无法解析：{e}\n请确保输出合法 JSON（检查逗号、引号、转义）。"
+                        prompt = prompt + "\n\n" + retry_msg
+                    else:
+                        all_records.append({"company_name": company_name, "version": ver_name, "_error": str(e)})
+                        break
 
         if parsed is not None:
             # ── 三层枚举提取覆盖 ──
@@ -2186,10 +2329,12 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
                     f"创始人字段缺失，重试 {', '.join(missing_founder_fields)}...",
                     job_id=job_id,
                 )
-                retry_prompt = _founder_retry_prompt(prompt, missing_founder_fields)
+                founder_base = l3c_prompt if use_split_l3 else prompt
+                retry_prompt = _founder_retry_prompt(founder_base, missing_founder_fields)
+                retry_context = c_context if use_split_l3 else all_context
                 try:
                     retry_result = call_deepseek(
-                        api_key, retry_prompt, all_context,
+                        api_key, retry_prompt, retry_context,
                         temperature=0.1, max_tokens=16384, timeout=240, max_retries=5,
                     )
                     retry_parsed = _extract_json(retry_result)
@@ -2823,6 +2968,7 @@ def run_pipeline(company_name: str, company_url: str,
     # Step 3.5: 写入字段级表（解耦架构 — 字段不天然属于任何卡片）
     from services.field_service import split_research_to_fields
     from repositories.field_repo import insert_research_fields_batch
+    all_extracted_fields = {}
     for record in records:
         _check_cancel()
         version = record.get('version', 'standard')
@@ -2834,6 +2980,12 @@ def run_pipeline(company_name: str, company_url: str,
         }
         field_rows = split_research_to_fields(field_record, version)
         if field_rows:
+            # Collect fields for post-write snapshot
+            for fr in field_rows:
+                fk = fr.get("field_key", "")
+                fv = fr.get("field_value", "")
+                if fk:
+                    all_extracted_fields[fk] = fv
             insert_research_fields_batch(config.DB_PATH_RESEARCH, field_rows)
             # LLM后、分辨率前：用字段值匹配chunks创建强证据绑定
             if chunk_ids:
@@ -2861,6 +3013,24 @@ def run_pipeline(company_name: str, company_url: str,
             # P2: ForumModerator 字段质量检查
             _run_forum_moderation(
                 config.DB_PATH_RESEARCH, company_name, version, field_rows)
+
+    # ── TimeSeriesSnapshotter: 字段快照（非阻断）──
+    from research.time_series import TimeSeriesSnapshotter
+    try:
+        snapshotter = TimeSeriesSnapshotter()
+        fields_for_snapshot = {}
+        for fk, fv in all_extracted_fields.items():
+            fields_for_snapshot[fk] = {
+                "value": fv,
+                "resolution_status": "llm_extracted",
+            }
+        snapshotter.snapshot(
+            company_key, fields_for_snapshot,
+            snapshot_type="fields_only",
+            research_run_id=job_id,
+        )
+    except Exception:
+        pass  # Snapshot failure must not block the pipeline
 
     t3 = time.time()
 

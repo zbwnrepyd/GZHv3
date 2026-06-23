@@ -105,6 +105,39 @@ class TestFieldRepoCompanyKey(unittest.TestCase):
         # 至少有 1 条匹配
         self.assertGreaterEqual(len(rows), 1, "Should find at least one row")
 
+    def test_get_research_fields_prefers_exact_company_name_over_legacy_key(self):
+        """Display-name lookups should not be hijacked by stale lower-case company_key rows."""
+        from repositories.field_repo import get_research_fields
+        import sqlite3
+        import tempfile
+        import os
+
+        db_path = tempfile.mktemp(suffix=".sqlite")
+        conn = sqlite3.connect(db_path)
+        conn.execute("""CREATE TABLE research_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_name TEXT, company_key TEXT DEFAULT '', version TEXT,
+            field_key TEXT, field_label TEXT, field_value TEXT,
+            source_type TEXT, source_url TEXT, confidence TEXT,
+            raw_payload TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )""")
+        conn.execute(
+            "INSERT INTO research_fields (company_name, company_key, version, field_key, field_value) "
+            "VALUES ('ideogram', 'ideogram', 'standard', 'company_type', '旧类型')"
+        )
+        conn.execute(
+            "INSERT INTO research_fields (company_name, company_key, version, field_key, field_value) "
+            "VALUES ('Ideogram', 'ideogram.ai', 'standard', 'company_type', '新类型')"
+        )
+        conn.commit()
+
+        rows = get_research_fields(db_path, "Ideogram", "standard")
+        conn.close()
+        os.unlink(db_path)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["field_value"], "新类型")
+
 
 class TestIdentityNotSplit(unittest.TestCase):
     """端到端：不同大小写的公司名不产生分裂"""

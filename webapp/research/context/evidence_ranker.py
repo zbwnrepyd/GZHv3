@@ -33,6 +33,7 @@ _SOURCE_AUTHORITY: dict[str, float] = {
     "trusted_media": 0.7,
     "media_article": 0.6,
     "docs": 0.7,
+    "whatweb": 0.72,
     "github": 0.55,
     "youtube": 0.5,
     "youtube_transcript": 0.5,

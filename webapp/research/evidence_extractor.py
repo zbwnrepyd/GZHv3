@@ -108,7 +108,7 @@ def build_evidence_map(db_path: str, company_key: str,
         rows = conn.execute(
             f"""SELECT field_key, id, created_by_agent, confidence FROM evidence_spans
                 WHERE company_key=? AND field_key IN ({placeholders})
-                AND (created_by_agent != 'posthoc_weak_matcher' OR created_by_agent IS NULL)
+                AND (created_by_agent NOT IN ('posthoc_weak_matcher') OR created_by_agent IS NULL)
                 AND confidence >= 0.35
                 ORDER BY confidence DESC""",
             [company_key] + field_keys,

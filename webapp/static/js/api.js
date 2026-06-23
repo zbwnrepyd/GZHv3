@@ -61,13 +61,14 @@ const API = {
     return res.json();
   },
 
-  async startResearch(companyName, companyUrl) {
+  async startResearch(companyName, companyUrl, researchOptions) {
     const res = await fetch('/api/research/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         company_name: companyName,
-        company_url: companyUrl
+        company_url: companyUrl,
+        research_options: researchOptions || {}
       })
     });
     if (!res.ok) throw new Error(await res.text());

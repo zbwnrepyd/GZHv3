@@ -93,6 +93,9 @@ def get_companies(db_path: str, final_db_path: str = "",
                     if value is not None and str(value).strip() not in ("", "暂缺"):
                         filled += 1
             completeness = round(filled / len(REQUIRED_RESEARCH_FIELDS) * 100) if latest else 0
+            field_table_completeness = _research_fields_completeness(conn, latest_cname, ckey)
+            if field_table_completeness is not None:
+                completeness = field_table_completeness
             confirmed = 0
             # total 优先从卡片设置(composition_db)取启用卡片数，否则默认8
             total = _count_enabled_cards(composition_db_path, latest_cname, ckey)
@@ -120,6 +123,48 @@ def get_companies(db_path: str, final_db_path: str = "",
                 }
             )
         return companies
+
+
+def _research_fields_completeness(conn: sqlite3.Connection, company_name: str,
+                                  company_key: str = "") -> int | None:
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "research_fields" not in tables:
+        return None
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(research_fields)").fetchall()
+    }
+    required_columns = {"company_name", "version", "field_key", "field_value"}
+    if not required_columns.issubset(columns):
+        return None
+
+    required = list(dict.fromkeys(REQUIRED_RESEARCH_FIELDS))
+    placeholders = ",".join(["?"] * len(required))
+    clauses = ["LOWER(company_name)=LOWER(?)"]
+    params: list[object] = [company_name]
+    if company_key and "company_key" in columns:
+        clauses.append("company_key=?")
+        params.append(company_key)
+
+    rows = conn.execute(
+        f"""
+        SELECT version, COUNT(DISTINCT field_key) AS filled
+        FROM research_fields
+        WHERE ({' OR '.join(clauses)})
+          AND field_key IN ({placeholders})
+          AND field_value IS NOT NULL
+          AND TRIM(CAST(field_value AS TEXT)) NOT IN ('', '暂缺')
+        GROUP BY version
+        """,
+        [*params, *required],
+    ).fetchall()
+    if not rows:
+        return None
+    filled = max(int(row["filled"] or 0) for row in rows)
+    return round(filled / len(required) * 100)
 
 
 def _company_scoring_payload(row: sqlite3.Row | None) -> dict:
@@ -357,6 +402,7 @@ REQUIRED_RESEARCH_FIELDS = [
     "market_opportunity", "hook_paragraph_1", "hook_paragraph_2", "hook_paragraph_3",
     "data_confidence", "tech_stack",
     # v3 新增字段 — 公司简介页
+    "market_track", "market_subtrack",
     "market_landscape_summary", "market_landscape_top_players",
     "market_size_value", "market_size_currency", "market_size_year",
     "tam_value", "tam_currency", "tam_year",
@@ -458,6 +504,8 @@ def _ensure_research_schema(conn: sqlite3.Connection):
         "input_name": "TEXT",
         "website_host": "TEXT",
         # v3 新增字段 — 公司简介页
+        "market_track": "TEXT",
+        "market_subtrack": "TEXT",
         "market_landscape_summary": "TEXT",
         "market_landscape_top_players": "TEXT",
         "market_size_value": "REAL",

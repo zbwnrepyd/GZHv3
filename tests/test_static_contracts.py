@@ -251,6 +251,11 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn("renderSourceStatus", index_js)
         self.assertIn("job.sources", index_js)
         self.assertIn("collecting: '采集中'", index_js)
+        self.assertIn("not_configured: '未配置'", index_js)
+        with open(os.path.join(ROOT, "webapp", "static", "css", "editor.css"), encoding="utf-8") as f:
+            editor_css = f.read()
+        self.assertIn(".source-not_configured", editor_css)
+        self.assertIn(".source-not_applicable", editor_css)
         self.assertIn('{**current_sources, **sources}', app_py)
         self.assertNotIn('on_progress("资产采集"', app_py)
         self.assertNotIn("_refetch_founder_fields", app_py)
@@ -571,7 +576,7 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn("`chart_competitive`", spec)
         self.assertIn("GET /api/assets/resolved", spec)
 
-    def test_office_map_is_main_collection_path(self):
+    def test_office_map_is_manual_collection_only(self):
         with open(os.path.join(ROOT, "webapp", "asset_pipeline.py"), encoding="utf-8") as f:
             pipeline_py = f.read()
         with open(os.path.join(ROOT, "webapp", "app.py"), encoding="utf-8") as f:
@@ -579,6 +584,7 @@ class StaticContractTests(unittest.TestCase):
 
         self.assertIn("Office asset: map first, then supplemental street-view/Tavily candidates", pipeline_py)
         self.assertIn('"公司位置地图"', pipeline_py)
+        self.assertIn('if asset_key == "office"', pipeline_py)
         self.assertNotIn("卡片2：公司位置地图", pipeline_py)
         self.assertIn("_render_osm_tile_composite", pipeline_py)
         self.assertIn("_render_static_map_card", pipeline_py)

@@ -137,6 +137,11 @@ class SecAdapter(SourceAdapter):
                 "SecAdapter: Adapter not configured: set %s",
                 self.API_KEY_ENV_VAR,
             )
+            self.last_summary = {
+                "status": "not_configured",
+                "count": 0,
+                "detail": f"未配置 API Key（{self.API_KEY_ENV_VAR}）",
+            }
             return []
 
         identity = self._build_identity_context(company_identity)

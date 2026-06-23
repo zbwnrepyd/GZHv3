@@ -109,6 +109,13 @@ def get_research_fields(db_path: str, company_name: str,
         existing = _existing_columns(conn, "research_fields")
         has_ckey = "company_key" in existing
         if has_ckey:
+            exact_rows = conn.execute(
+                """SELECT * FROM research_fields
+                   WHERE company_name=? AND version=?
+                   ORDER BY field_key""",
+                (company_name, version)).fetchall()
+            if exact_rows:
+                return [dict(r) for r in exact_rows]
             rows = conn.execute(
                 """SELECT * FROM research_fields
                    WHERE (company_key=? OR (company_key='' AND company_name=?))

@@ -838,8 +838,8 @@ def collect_all_assets(db_path: str, images_root: str, company_name: str,
     ensure_assets_rows(db_path, company_name)
     results = {}
 
-    company_url = company_data.get("company_url") or company_data.get("website_url") or ""
-    website_url = company_data.get("website_url") or company_data.get("company_url") or ""
+    company_url = _extract_company_url(company_data)
+    website_url = company_url
     location = company_data.get("location") or ""
 
     # 构建搜索词配置
@@ -887,8 +887,8 @@ def _collect_assets_as_variants(db_path: str, images_root: str, company_name: st
     """
     from asset_store import insert_variant, upsert_asset
     query_config = build_image_queries(company_data)
-    company_url = company_data.get("company_url") or company_data.get("website_url") or ""
-    website_url = company_data.get("website_url") or company_data.get("company_url") or ""
+    company_url = _extract_company_url(company_data)
+    website_url = company_url
     location = company_data.get("location") or ""
 
     ensure_assets_rows(db_path, company_name)
@@ -2015,6 +2015,17 @@ def _collect_competitor_logo_strip_variants(db_path: str, images_root: str, comp
     return 1 if variant_id else 0
 
 
+def _extract_company_url(company_data: dict) -> str:
+    """从 company_data 中提取官网 URL，兼容多种字段名。
+    优先级：company_url > website_url > website > official_website > homepage_url > url
+    """
+    for key in ("company_url", "website_url", "website", "official_website", "homepage_url", "url"):
+        val = company_data.get(key, "")
+        if val and str(val).strip():
+            return str(val).strip()
+    return ""
+
+
 def _collect_website_screenshot_variants(
     db_path: str, images_root: str, company_name: str,
     company_url: str = "", company_key: str = "",
@@ -2053,6 +2064,22 @@ def _collect_website_screenshot_variants(
                     company_key=company_key)
         return 0
 
+    # 读取截图尺寸和文件大小，写入变体记录（失败不中断采集）
+    img_width = None
+    img_height = None
+    img_file_size = None
+    img_aspect_ratio = None
+    try:
+        from PIL import Image
+        with Image.open(dest) as im:
+            img_width, img_height = im.size
+        img_file_size = Path(dest).stat().st_size
+        if img_height and img_height > 0:
+            img_aspect_ratio = round(img_width / img_height, 4)
+    except Exception:
+        import traceback
+        print(f"[官网截图-元数据] {company_name}: 读取尺寸失败\n{traceback.format_exc()}", flush=True)
+
     variant_id = insert_variant(
         db_path, company_name, "website_screenshot",
         local_path=_variant_browser_path(company_name, dest),
@@ -2060,6 +2087,10 @@ def _collect_website_screenshot_variants(
         source_url=company_url,
         source_page=company_url,
         prompt="官网首页截图",
+        width=img_width,
+        height=img_height,
+        file_size=img_file_size,
+        aspect_ratio=img_aspect_ratio,
         company_key=company_key,
     )
     if variant_id:
@@ -2220,7 +2251,7 @@ def collect_image_variants_pipeline(
     如果指定 asset_key，只采集该槽位。"""
     query_config = build_image_queries(company_data)
     location = company_data.get("location", "")
-    company_url = company_data.get("company_url") or company_data.get("website_url") or ""
+    company_url = _extract_company_url(company_data)
     company_key = company_data.get("company_key", "")
 
     ensure_assets_rows(db_path, company_name, company_key=company_key)
@@ -2228,9 +2259,6 @@ def collect_image_variants_pipeline(
     stages = [
         ("website_screenshot", "官网首页截图", lambda ck=company_key: _collect_website_screenshot_variants(
             db_path, images_root, company_name, company_url, company_key=ck)),
-        ("office", "公司位置地图", lambda ck=company_key: _collect_office_variants(
-            db_path, images_root, company_name, location, query_config.get("office", {}), company_url,
-            company_key=ck)),
         ("product_main", "主产品截图", lambda ck=company_key: _collect_product_main_variants(
             db_path, images_root, company_name, query_config.get("product_main", {}),
             company_key=ck)),
@@ -2247,6 +2275,10 @@ def collect_image_variants_pipeline(
 
     # 如果指定了 asset_key，只跑对应阶段
     if asset_key:
+        if asset_key == "office":
+            stages.append(("office", "公司位置地图", lambda ck=company_key: _collect_office_variants(
+                db_path, images_root, company_name, location, query_config.get("office", {}), company_url,
+                company_key=ck)))
         stages = [(k, l, c) for k, l, c in stages if k == asset_key]
 
     results = {}

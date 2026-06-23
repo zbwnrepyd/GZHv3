@@ -13,6 +13,15 @@ from ..source_adapter import SourceAdapter, SourceDocument
 logger = logging.getLogger(__name__)
 
 
+def _load_github_agent_class():
+    try:
+        from webapp.research_agents.agents.github_agent import GitHubAgent
+        return GitHubAgent
+    except ImportError:
+        from research_agents.agents.github_agent import GitHubAgent
+        return GitHubAgent
+
+
 class GithubAdapter(SourceAdapter):
     """GitHub 来源适配器。
 
@@ -72,11 +81,7 @@ class GithubAdapter(SourceAdapter):
 
         try:
             # 延迟导入，避免循环依赖
-            from webapp.research_agents.agents.github_agent import (
-                GitHubAgent,
-            )
-
-            agent = GitHubAgent()
+            agent = _load_github_agent_class()()
             company_key = display_name.lower().replace(" ", "-")
 
             context = {

@@ -1,0 +1,4 @@
+# Optional crawler module dependency.
+# Scrapling requires Python >= 3.10; keep this separate from requirements.txt
+# so the main project can still run in Python 3.9 environments.
+scrapling[fetchers]>=0.4.9

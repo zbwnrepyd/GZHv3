@@ -26,7 +26,7 @@ class SourceDocument:
     """
     source_family: str
     """来源族标识: official_site | tavily_search | tavily_extract | github |
-    producthunt | youtube | sec | openbb | companieshouse | builtwith"""
+    producthunt | youtube | sec | openbb | companieshouse | whatweb"""
 
     source_url: str
     """文档来源 URL（官网页面、搜索命中链接、GitHub Issue URL 等）"""

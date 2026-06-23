@@ -10,11 +10,13 @@ const SearchPanel = {
   _perPage: 9,
   _loading: false,
   _slotImage: '',
+  _slotStatus: '',    // slot 状态：missing | failed | ready | ...
   _view: 'preview', // 'preview' | 'search'
   _container: null,
   _onFetch: null,     // callback(imageData) — 搜索结果被点击下载后
   _onRefresh: null,   // callback() — 变体列表刷新后（重采集等）
   _queries: [],
+  _capturing: false,  // 是否正在采集中
 
   init(container, { onFetch, onRefresh }) {
     this._container = container;
@@ -29,17 +31,22 @@ const SearchPanel = {
     this._currentPage = 1;
     this._totalResults = 0;
     this._slotImage = '';
+    this._slotStatus = '';
+    this._capturing = false;
     this._view = 'preview';
   },
 
-  setSlotImage(localPath) {
+  /* 外部调用：设置当前槽位已选图片。status 可选，传入 slot 状态用于 missing/failed 判断 */
+  setSlotImage(localPath, status) {
     this._slotImage = localPath || '';
+    if (status !== undefined) this._slotStatus = status;
     this._renderPreview();
   },
 
   /* 外部调用：右栏缩略图点击时在中间预览 */
   showPreviewImage(src) {
     this._slotImage = src;
+    if (src) this._slotStatus = 'ready';  // 有候选图片时标记为 ready
     this._switchView('preview');
     this._renderPreview();
   },
@@ -228,6 +235,22 @@ const SearchPanel = {
     if (!stage) return;
     if (this._slotImage) {
       stage.innerHTML = `<img src="${this._escape(this._slotImage)}" alt="选定预览" onerror="this.parentElement.innerHTML='<div class=preview-empty><div class=empty-icon>&#9888;</div><p>图片加载失败</p></div>'">`;
+    } else if ((this._slotStatus === 'missing' || this._slotStatus === 'failed') && this._assetKey) {
+      const label = (window.DEMAND_LABELS && window.DEMAND_LABELS[this._assetKey]) || this._assetKey;
+      const reason = this._slotStatus === 'failed' ? '采集失败，可重试' : '暂未采集';
+      const icon = this._slotStatus === 'failed' ? '&#9888;' : '&#128247;';
+      const btnDisabled = this._capturing ? 'disabled' : '';
+      const btnText = this._capturing ? '采集中...' : '立即采集';
+      stage.innerHTML = `
+        <div class="preview-empty">
+          <div class="empty-icon">${icon}</div>
+          <p>${this._escape(label)} · ${reason}</p>
+          <button class="btn-capture-now" id="btn-capture-now" ${btnDisabled}>${btnText}</button>
+        </div>`;
+      const btn = stage.querySelector('#btn-capture-now');
+      if (btn) {
+        btn.addEventListener('click', () => this._captureScreenshot());
+      }
     } else {
       stage.innerHTML = `<div class="preview-empty"><div class="empty-icon">&#128247;</div><p>未选择图片</p></div>`;
     }
@@ -323,6 +346,37 @@ const SearchPanel = {
     });
   },
 
+  /* ── 一键采集（empty state 按钮）── */
+
+  async _captureScreenshot() {
+    if (this._capturing) return;
+    this._capturing = true;
+    this._renderPreview();  // 按钮变 disabled
+
+    try {
+      const url = `/api/assets/collect/${encodeURIComponent(this._company)}?asset_key=${encodeURIComponent(this._assetKey)}`;
+      const r = await fetch(url, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+
+      // 采集成功：更新状态，刷新变体列表和槽位
+      this._slotStatus = 'ready';
+      if (this._onRefresh) await this._onRefresh();
+      // VariantSidebar._loadVariants 会自动预览已选中的变体
+    } catch (e) {
+      this._slotStatus = 'failed';
+      this._renderPreview();  // 显示错误状态 + 重试按钮
+      this._toast('采集失败: ' + e.message, 'error');
+    } finally {
+      this._capturing = false;
+      // 如果采集成功，_onRefresh 中 VariantSidebar 会自动调用 showPreviewImage，
+      // 此时 _slotImage 已设置，_renderPreview 会显示图片
+      if (this._slotStatus === 'failed') {
+        this._renderPreview();  // 确保显示重试按钮
+      }
+    }
+  },
+
   /* ── 重采集 ── */
 
   async _recollectAll() {
@@ -349,8 +403,8 @@ const SearchPanel = {
       const r = await fetch(url, { method: 'POST' });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-      if (this._onRefresh) this._onRefresh();
-      this._toast('当页重新采集完成');
+      this._slotStatus = 'ready';
+      if (this._onRefresh) await this._onRefresh();
     } catch (e) {
       this._toast('采集失败: ' + e.message, 'error');
     } finally {

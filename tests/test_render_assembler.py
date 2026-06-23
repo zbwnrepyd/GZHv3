@@ -34,12 +34,37 @@ def _setup_test_dbs():
     research_db.execute('''CREATE TABLE research (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         company_name TEXT NOT NULL,
+        company_key TEXT,
         company_type TEXT,
         location TEXT,
         company_def TEXT,
         core_business TEXT,
         ltv TEXT,
         cac TEXT
+    )''')
+    research_db.execute('''CREATE TABLE research_fields (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_name TEXT NOT NULL,
+        company_key TEXT DEFAULT '',
+        version TEXT DEFAULT 'standard',
+        field_key TEXT NOT NULL,
+        field_value TEXT,
+        resolution_status TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
+    research_db.execute('''CREATE TABLE final_card_values (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        company_key TEXT NOT NULL,
+        card_no INTEGER NOT NULL,
+        field_key TEXT NOT NULL,
+        final_value TEXT,
+        status TEXT DEFAULT 'draft',
+        confidence TEXT DEFAULT 'medium',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        resolution_status TEXT DEFAULT 'draft',
+        source_note TEXT DEFAULT '',
+        card_id TEXT DEFAULT ''
     )''')
 
     # final_db: final_fields table
@@ -132,8 +157,8 @@ def _setup_test_dbs():
 
     # Research data
     research_db.execute('''INSERT INTO research
-        (company_name, company_type, location, company_def, core_business, ltv, cac)
-        VALUES ('TestCo', 'SaaS', '北京', '测试公司定义', '核心业务描述', NULL, NULL)''')
+        (company_name, company_key, company_type, location, company_def, core_business, ltv, cac)
+        VALUES ('TestCo', 'testco.ai', 'SaaS', '北京', '测试公司定义', '核心业务描述', '暂缺', NULL)''')
 
     # Final data (overrides research for company_name)
     final_db.execute('''INSERT OR REPLACE INTO final_fields
@@ -196,6 +221,38 @@ class TestRenderAssembler:
         assert cac_item is not None, "CAC item should exist in card"
         assert cac_item['status'] == 'unavailable', \
             f"Expected 'unavailable' for private metric CAC, got '{cac_item['status']}'"
+
+    def test_render_assembler_skips_placeholder_wide_value_for_research_fields(self, assembler):
+        """Placeholder values in legacy research should not hide normalized field values."""
+        research = assembler._get_research_conn()
+        research.execute('''INSERT INTO research_fields
+            (company_name, company_key, version, field_key, field_value, resolution_status)
+            VALUES ('TestCo', 'testco.ai', 'spread', 'ltv', '行业基准 LTV', 'industry_avg')''')
+        research.commit()
+
+        contract = assembler.assemble('TestCo', 'v3')
+        intro_card = next(c for c in contract['cards'] if c['card_id'] == 'v3_card_02')
+        ltv_item = next(i for i in intro_card['items'] if i['field_key'] == 'ltv')
+
+        assert ltv_item['value'] == '行业基准 LTV'
+        assert ltv_item['status'] == 'industry_avg'
+        assert ltv_item['source'] == 'research_fields'
+
+    def test_render_assembler_prefers_final_card_values(self, assembler):
+        """v3 card read-model values should override research layer placeholders."""
+        research = assembler._get_research_conn()
+        research.execute('''INSERT INTO final_card_values
+            (run_id, company_key, card_no, field_key, final_value, status, resolution_status)
+            VALUES ('run-1', 'testco.ai', 2, 'cac', '行业基准 CAC', 'unavailable', 'industry_avg')''')
+        research.commit()
+
+        contract = assembler.assemble('TestCo', 'v3')
+        intro_card = next(c for c in contract['cards'] if c['card_id'] == 'v3_card_02')
+        cac_item = next(i for i in intro_card['items'] if i['field_key'] == 'cac')
+
+        assert cac_item['value'] == '行业基准 CAC'
+        assert cac_item['status'] == 'unavailable'
+        assert cac_item['source'] == 'final_card_values'
 
     def test_render_assembler_missing_media_returns_fallback(self, assembler):
         """Missing media should have fallback or manual_needed status, never crash."""

@@ -30,6 +30,90 @@
       <input id="research-company-url" type="url" placeholder="https://www.anthropic.com">
       <button id="btn-start-research" class="btn btn-primary">开始研究</button>
     </div>
+    <div class="research-options-panel" aria-label="研究模块选项">
+      <div class="research-options-head">
+        <div>
+          <div class="research-options-title">研究模块</div>
+          <p id="research-options-summary">按本次研究选择采集来源和治理环节。</p>
+        </div>
+        <button id="btn-reset-research-options" class="btn btn-sm" type="button">恢复默认</button>
+      </div>
+      <div class="research-options-grid">
+        <div class="research-option-group">
+          <div class="research-option-group-title">采集来源</div>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="scrapling_search" checked>
+            <span></span><strong>开放网页搜索</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="official_site" checked>
+            <span></span><strong>官网抓取</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="tavily_search" checked>
+            <span></span><strong>Tavily 补搜</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="tavily_extract" checked>
+            <span></span><strong>Tavily 深抓</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="github" checked>
+            <span></span><strong>GitHub</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="producthunt" checked>
+            <span></span><strong>Product Hunt</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="youtube" checked>
+            <span></span><strong>YouTube</strong>
+          </label>
+        </div>
+        <div class="research-option-group">
+          <div class="research-option-group-title">数据源补充</div>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="sec" checked>
+            <span></span><strong>SEC</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="companieshouse" checked>
+            <span></span><strong>Companies House</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="openbb" checked>
+            <span></span><strong>OpenBB</strong>
+          </label>
+<label class="research-toggle">
+            <input type="checkbox" data-research-option="whatweb" checked>
+            <span></span><strong>WhatWeb</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="gap_refetch" checked>
+            <span></span><strong>缺口补采</strong>
+          </label>
+        </div>
+        <div class="research-option-group">
+          <div class="research-option-group-title">证据治理</div>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="document_chunking" checked>
+            <span></span><strong>文档切块</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="context_packer" checked>
+            <span></span><strong>上下文打包</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="evidence_span_binding" checked>
+            <span></span><strong>证据绑定</strong>
+          </label>
+          <label class="research-toggle">
+            <input type="checkbox" data-research-option="image_collection" checked>
+            <span></span><strong>图片采集</strong>
+          </label>
+        </div>
+      </div>
+    </div>
     <div class="progress-shell hidden" id="research-progress">
       <div class="progress-meta">
         <span id="research-stage">待命</span>

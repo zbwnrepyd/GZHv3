@@ -188,7 +188,8 @@ def _build_card_markdown_v1(db_path: str, company_name: str, card_index: int, ve
 # v3 每页字段定义（与 default_card_configs v3 config_json 一致）
 _V3_PAGE_FIELDS: dict[int, list[str]] = {
     1: ["company_name", "company_type"],
-    2: ["market_landscape_summary", "market_landscape_top_players",
+    2: ["market_track", "market_subtrack",
+        "market_landscape_summary", "market_landscape_top_players",
         "market_size_value", "market_size_currency",
         "market_size_year", "market_cagr", "tam_value", "tam_currency",
         "tam_year", "location", "founded_date", "core_business",
@@ -216,6 +217,8 @@ _V3_PAGE_FIELDS: dict[int, list[str]] = {
 _V3_FIELD_LABELS: dict[str, str] = {
     "company_name": "公司名称",
     "company_type": "公司分类",
+    "market_track": "赛道",
+    "market_subtrack": "细分赛道",
     "market_landscape_summary": "赛道市场格局",
     "market_landscape_top_players": "Top 玩家",
     "market_size_value": "赛道市场规模",

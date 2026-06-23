@@ -9,12 +9,11 @@ sys.path.insert(0, os.path.join(ROOT, "webapp"))
 class DeepResearchReportToolTests(unittest.TestCase):
     def test_external_tool_adapters_skip_without_credentials(self):
         from tool_adapters import (
-            builtwith_lookup, wappalyzer_lookup, similarweb_traffic,
+            wappalyzer_lookup, similarweb_traffic,
             semrush_domain_overview, openbb_dataset_stub, crawl4ai_extract_stub,
         )
 
         for result in (
-            builtwith_lookup("example.com", api_key=""),
             wappalyzer_lookup("https://example.com", api_key=""),
             similarweb_traffic("example.com", api_key=""),
             semrush_domain_overview("example.com", api_key=""),

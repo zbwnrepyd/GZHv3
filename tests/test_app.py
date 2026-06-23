@@ -41,6 +41,63 @@ class ResearchStartTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"], "缺少 company_name 或 company_url")
 
+    def test_start_research_stores_research_options(self):
+        class FakeThread:
+            def __init__(self, target=None, args=(), daemon=False):
+                self.target = target
+                self.args = args
+                self.daemon = daemon
+
+            def start(self):
+                return None
+
+        with app_module._jobs_lock:
+            app_module._jobs.clear()
+        payload = {
+            "company_name": "DemoCo",
+            "company_url": "https://demo.example",
+            "research_options": {
+                "scrapling_search": True,
+                "tavily_search": False,
+                "github": True,
+            },
+        }
+
+        try:
+            with patch.object(app_module.threading, "Thread", FakeThread):
+                response = self.client.post("/api/research/start", json=payload)
+            data = response.get_json()
+            with app_module._jobs_lock:
+                job = app_module._jobs[data["job_id"]]
+        finally:
+            with app_module._jobs_lock:
+                app_module._jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(job["research_options"]["scrapling_search"], True)
+        self.assertEqual(job["research_options"]["tavily_search"], False)
+        self.assertEqual(data["research_options"]["github"], True)
+
+    def test_count_research_fields_uses_name_or_company_key(self):
+        fd, db_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(db_path) and os.remove(db_path))
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE research_fields (company_name TEXT, company_key TEXT)")
+            conn.executemany(
+                "INSERT INTO research_fields (company_name, company_key) VALUES (?, ?)",
+                [
+                    ("DemoCo", "demo.co"),
+                    ("Demo Company", "demo.co"),
+                    ("OtherCo", "other.co"),
+                ],
+            )
+
+        with patch.object(app_module.config, "DB_PATH_RESEARCH", db_path):
+            count = app_module._count_research_fields_for_company("DemoCo", "demo.co")
+
+        self.assertEqual(count, 2)
+
     def test_stop_research_marks_running_job_as_cancelling(self):
         with app_module._jobs_lock:
             app_module._jobs.clear()
@@ -64,7 +121,36 @@ class ResearchStartTests(unittest.TestCase):
                 app_module._jobs.clear()
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["status"], "ok")
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertEqual(payload["stage"], "已停止")
+        self.assertEqual(payload["sources"], {})
+        self.assertEqual(payload["stages"], [])
+
+    def test_stop_research_is_idempotent_for_cancelled_memory_job(self):
+        with app_module._jobs_lock:
+            app_module._jobs.clear()
+            app_module._jobs["job-stop"] = {
+                "job_id": "job-stop",
+                "company_name": "DemoCo",
+                "status": "cancelled",
+                "stage": "已停止",
+                "detail": "用户已停止研究",
+                "cancelled": True,
+                "sources": {"tavily_search": {"count": 2}},
+                "stages": [{"stage": "采集", "detail": "旧信息"}],
+            }
+        try:
+            response = self.client.post("/api/research/stop/job-stop")
+        finally:
+            with app_module._jobs_lock:
+                app_module._jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertEqual(payload["sources"], {})
+        self.assertEqual(payload["stages"], [])
 
     def test_running_research_cancels_orphaned_db_job_when_memory_is_empty(self):
         db_path = init_sqlite("init_research_db.sql")
@@ -104,9 +190,63 @@ class ResearchStartTests(unittest.TestCase):
             os.remove(db_path)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json()["status"], "ok")
+        self.assertEqual(response.get_json()["status"], "cancelled")
         self.assertEqual(job["status"], "cancelled")
         self.assertEqual(job["stage"], "已停止")
+
+    def test_stop_research_clears_written_research_fields_for_company(self):
+        db_path = init_sqlite("init_research_db.sql")
+        migration_paths = [
+            "001_research_fields.sql",
+            "013_source_documents.sql",
+            "016_final_card_values.sql",
+        ]
+        with sqlite3.connect(db_path) as conn:
+            for migration in migration_paths:
+                with open(os.path.join(ROOT, "db", "migrations", migration), encoding="utf-8") as f:
+                    conn.executescript(f.read())
+            conn.execute(
+                "INSERT INTO research_fields(company_name, version, field_key, field_value) VALUES (?, ?, ?, ?)",
+                ("DemoCo", "standard", "company_type", "AI工具"),
+            )
+            conn.execute(
+                "INSERT INTO research_fields(company_name, version, field_key, field_value) VALUES (?, ?, ?, ?)",
+                ("OtherCo", "standard", "company_type", "AI工具"),
+            )
+            conn.execute(
+                "INSERT INTO final_card_values(run_id, company_key, card_no, field_key, final_value) VALUES (?, ?, ?, ?, ?)",
+                ("job-db-stop", "democo", 1, "company_type", "AI工具"),
+            )
+            conn.commit()
+
+        old_research = app_module.config.DB_PATH_RESEARCH
+        app_module.config.DB_PATH_RESEARCH = db_path
+        with app_module._jobs_lock:
+            app_module._jobs.clear()
+        db.create_job(db_path, "job-db-stop", "DemoCo", "https://demo.example",
+                      company_key="democo")
+        try:
+            response = self.client.post("/api/research/stop/job-db-stop")
+            payload = response.get_json()
+            with sqlite3.connect(db_path) as conn:
+                demo_count = conn.execute(
+                    "SELECT COUNT(*) FROM research_fields WHERE company_name='DemoCo'"
+                ).fetchone()[0]
+                other_count = conn.execute(
+                    "SELECT COUNT(*) FROM research_fields WHERE company_name='OtherCo'"
+                ).fetchone()[0]
+                card_count = conn.execute(
+                    "SELECT COUNT(*) FROM final_card_values WHERE run_id='job-db-stop'"
+                ).fetchone()[0]
+        finally:
+            app_module.config.DB_PATH_RESEARCH = old_research
+            os.remove(db_path)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["status"], "cancelled")
+        self.assertEqual(demo_count, 0)
+        self.assertEqual(other_count, 1)
+        self.assertEqual(card_count, 0)
 
 
 class PageRouteTests(unittest.TestCase):
@@ -215,6 +355,41 @@ class CompanyListTests(unittest.TestCase):
         self.assertEqual(companies[0]["company_name"], "DemoCo")
         self.assertEqual(companies[0]["website_url"], "https://demo.example")
         self.assertEqual(companies[0]["company_url"], "https://demo.example")
+
+    def test_company_list_completeness_prefers_research_fields(self):
+        valid_fields = db.REQUIRED_RESEARCH_FIELDS[:10]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS research_fields (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_name TEXT NOT NULL,
+                    company_key TEXT DEFAULT '',
+                    version TEXT DEFAULT 'standard',
+                    field_key TEXT NOT NULL,
+                    field_value TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO research_fields
+                    (company_name, company_key, version, field_key, field_value)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    ("DemoCo", "", "standard", field_key, f"value-{field_key}")
+                    for field_key in valid_fields
+                ],
+            )
+
+        companies = db.get_companies(self.db_path)
+
+        self.assertEqual(
+            companies[0]["completeness"],
+            round(len(valid_fields) / len(db.REQUIRED_RESEARCH_FIELDS) * 100),
+        )
 
 
 class ImageRouteTests(unittest.TestCase):
@@ -593,12 +768,34 @@ class AssetPathSafetyTests(unittest.TestCase):
                     images_root,
                     "DemoCo",
                     {"location": "San Francisco"},
+                    asset_key="office",
                 )
 
         demo_asset = asset_store.get_asset(assets_db_path, "DemoCo", "office")
         variants = asset_store.list_variants(assets_db_path, "DemoCo", "office")
         self.assertEqual(demo_asset["local_path"], "/images/DemoCo/variants/office.png")
         self.assertEqual(variants[0]["is_selected"], 1)
+
+    def test_collection_pipeline_skips_office_map_by_default(self):
+        assets_db_path = init_sqlite("init_assets_db.sql")
+        self.addCleanup(lambda: os.path.exists(assets_db_path) and os.remove(assets_db_path))
+
+        with tempfile.TemporaryDirectory() as images_root:
+            with patch.object(asset_pipeline, "_collect_office_variants", return_value=1) as collect_office, \
+                 patch.object(asset_pipeline, "_collect_website_screenshot_variants", return_value=0), \
+                 patch.object(asset_pipeline, "_collect_product_main_variants", return_value=0), \
+                 patch.object(asset_pipeline, "_collect_products_other_variants", return_value=0), \
+                 patch.object(asset_pipeline, "_collect_competitors_variants", return_value=0), \
+                 patch.object(asset_pipeline, "_collect_competitor_logo_strip_variants", return_value=0):
+                results = asset_pipeline.collect_image_variants_pipeline(
+                    assets_db_path,
+                    images_root,
+                    "DemoCo",
+                    {"location": "San Francisco"},
+                )
+
+        collect_office.assert_not_called()
+        self.assertNotIn("office", results)
 
     def test_collection_progress_labels_use_asset_demand_not_card_number(self):
         assets_db_path = init_sqlite("init_assets_db.sql")

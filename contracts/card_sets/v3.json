@@ -11,6 +11,8 @@
       "card_id": "v3_card_02",
       "title": "公司简介",
       "fields": [
+        "market_track",
+        "market_subtrack",
         "market_landscape_summary",
         "market_landscape_top_players",
         "market_size_value",

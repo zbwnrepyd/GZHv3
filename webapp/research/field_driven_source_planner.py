@@ -32,6 +32,7 @@ class SourcePlan:
 # ── source_family 到 adapter 模块的映射 ──
 ADAPTER_FAMILY_MAP = {
     "official_site": "official_site_adapter",
+    "scrapling_search": "scrapling_search_adapter",
     "tavily_search": "tavily_search_adapter",
     "tavily_extract": "tavily_extract_adapter",
     "github": "github_adapter",
@@ -40,7 +41,7 @@ ADAPTER_FAMILY_MAP = {
     "sec": "sec_adapter",
     "openbb": "openbb_adapter",
     "companieshouse": "companieshouse_adapter",
-    "builtwith": "builtwith_adapter",
+    "whatweb": "whatweb_adapter",
 }
 
 # ── 字段类别到默认 source 的映射 ──
@@ -55,6 +56,7 @@ CATEGORY_DEFAULT_SOURCES = {
 # ── 默认 adapter 预算（可被 config 覆盖）──
 DEFAULT_ADAPTER_BUDGETS = {
     "official_site": {"max_urls": 5, "max_documents": 5, "timeout_seconds": 30},
+    "scrapling_search": {"max_queries": 30, "max_documents": 20, "timeout_seconds": 10},
     "tavily_search": {"max_queries": 14, "max_documents": 20, "timeout_seconds": 30},
     "tavily_extract": {"max_urls": 20, "max_documents": 20, "timeout_seconds": 30},
     "github": {"max_queries": 3, "max_documents": 3, "timeout_seconds": 15},
@@ -63,7 +65,7 @@ DEFAULT_ADAPTER_BUDGETS = {
     "sec": {"max_queries": 5, "max_documents": 5, "timeout_seconds": 20},
     "openbb": {"max_queries": 5, "max_documents": 5, "timeout_seconds": 20},
     "companieshouse": {"max_queries": 5, "max_documents": 5, "timeout_seconds": 20},
-    "builtwith": {"max_queries": 5, "max_documents": 5, "timeout_seconds": 20},
+    "whatweb": {"max_queries": 1, "max_documents": 1, "timeout_seconds": 20},
 }
 
 

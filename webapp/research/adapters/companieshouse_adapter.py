@@ -102,6 +102,11 @@ class CompaniesHouseAdapter(SourceAdapter):
                 "Adapter not configured: set %s",
                 self.API_KEY_ENV_VAR,
             )
+            self.last_summary = {
+                "status": "not_configured",
+                "count": 0,
+                "detail": f"未配置 API Key（{self.API_KEY_ENV_VAR}）",
+            }
             return []
 
         max_docs = min(

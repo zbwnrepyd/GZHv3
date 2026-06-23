@@ -9,7 +9,7 @@
 
 chunk_type 枚举：
 hero, about, pricing, customer, case_study, docs, blog, press,
-market_report, github_readme, youtube_transcript, community_comment,
+market_report, tech_profile, github_readme, youtube_transcript, community_comment,
 boilerplate, navigation, footer, cookie, legal, unknown
 
 目标：
@@ -49,6 +49,9 @@ _CHUNK_TYPE_KEYWORDS: list[tuple[str, list[str]]] = [
                "新闻稿", "宣布", "发布"]),
     ("market_report", ["market report", "industry report", "market size",
                        "market research", "市场报告", "行业报告"]),
+    ("tech_profile", ["technology stack", "technology profile", "WhatWeb",
+                      "HTTPServer", "JavaScript", "CDN",
+                      "WAF", "framework", "analytics", "技术栈"]),
     ("github_readme", ["README", "installation", "install", "npm install",
                        "pip install", "git clone", "usage"]),
     ("youtube_transcript", ["transcript", "video", "youtube", "episode"]),
@@ -90,6 +93,8 @@ def _infer_chunk_type(text: str, source_type: str = "", title: str = "") -> str:
         scores["customer"] = scores.get("customer", 0) + 2
     if source_type in ("market_report", "database"):
         scores["market_report"] = scores.get("market_report", 0) + 2
+    if source_type == "whatweb":
+        scores["tech_profile"] = scores.get("tech_profile", 0) + 4
 
     if not scores:
         return "unknown"

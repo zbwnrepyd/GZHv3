@@ -15,7 +15,8 @@ def register(bp: Blueprint):
         """返回公司的全部字段（含三版本 + 定稿状态）"""
         try:
             fields = get_fields_with_versions(
-                config.DB_PATH_RESEARCH, config.DB_PATH_FINAL, company)
+                config.DB_PATH_RESEARCH, config.DB_PATH_FINAL, company,
+                card_values_db_path=config.DB_PATH_RESEARCH)
             return jsonify({"company_name": company, "groups": fields})
         except Exception as e:
             return jsonify({"error": str(e)}), 500

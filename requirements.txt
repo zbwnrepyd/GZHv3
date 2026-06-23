@@ -7,5 +7,7 @@ lxml
 playwright
 Pillow
 pydantic>=2.0
+jsonschema
 PyYAML
 youtube-transcript-api>=0.6
+openbb

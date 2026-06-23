@@ -355,11 +355,13 @@ def _upsert_adapter_plan(source_plan, adapter_family: str, field_targets: list[s
 def _apply_research_options_to_source_plan(source_plan, card_fields: list[str],
                                            research_options: dict | None):
     options = research_options or {}
-    # Tavily 只作为本机/开放网页第一轮后的补缺口路径，不进入初始 adapter 计划。
+    # Tavily 作为补采路径，不进入初始 adapter 计划。
+    # 第一轮采集完成后由 pre-gap refetch 按阈值自动触发。
     source_plan.adapters = [
         entry for entry in source_plan.adapters
         if entry.get("adapter_family") not in ("tavily_search", "tavily_extract")
     ]
+    # 过滤用户禁用的 adapter
     disabled_adapters = {
         key for key, enabled in options.items()
         if enabled is False and key in _ADAPTER_MODULE_BY_FAMILY
@@ -593,7 +595,7 @@ def _search_tavily(queries, progress_callback=None, job_id: str = None) -> list:
             summary["detail"] = f"{len(batches)}/{total} 组查询，{summary['detail']}"
             _report(progress_callback, "采集", {
                 "message": f"Tavily 搜索中：{summary['detail']}",
-                "sources": {"tavily": summary},
+                "sources": {"tavily": summary, "tavily_search": summary},
             }, job_id=job_id)
     return batches
 
@@ -702,14 +704,24 @@ def _needs_pre_gap_refetch(raw: dict) -> bool:
     website_src = src.get("website", {}) or {}
     github_src = src.get("github", {}) or {}
     youtube_src = src.get("youtube", {}) or {}
+    scrapling_src = src.get("scrapling_search", {}) or {}
+
     website_chars = int(website_src.get("count", 0) or 0)
-    website_enough = website_src.get("status") == "ok" and website_chars >= getattr(config, "COLLECTION_WEBSITE_SUFFICIENT_CHARS", 1500)
-    secondary_enough = int(github_src.get("count", 0) or 0) > 0 or int(youtube_src.get("count", 0) or 0) > 0
+    # 提高触发门槛：官网内容需 3000+ 字符才算"充足"
+    website_enough = website_src.get("status") == "ok" and website_chars >= getattr(config, "COLLECTION_WEBSITE_SUFFICIENT_CHARS", 3000)
+    # 至少两个补充源有结果才算充分
+    secondary_count = sum(1 for s in (github_src, youtube_src, scrapling_src)
+                          if int(s.get("count", 0) or 0) > 0)
+    secondary_enough = secondary_count >= 2
     if website_enough and secondary_enough:
         return False
+
     unique_urls = int(tavily_src.get("unique_url_count", 0) or 0)
     intents_found = int(tavily_src.get("intent_count", 0) or 0)
-    return unique_urls < int(getattr(config, "COLLECTION_MIN_UNIQUE_URLS", 18)) or intents_found < 4
+    # 降低 URL/意图下限，让补采更容易触发
+    min_urls = int(getattr(config, "COLLECTION_MIN_UNIQUE_URLS", 10))
+    min_intents = int(getattr(config, "COLLECTION_MIN_INTENTS", 2))
+    return unique_urls < min_urls or intents_found < min_intents
 
 
 def _prioritize_gap_queries(gaps: dict[str, list[str]], display_name: str,
@@ -2086,20 +2098,15 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
     # Layer 0
     _report(progress_callback, "L0清洗", "信息清洗中...", job_id=job_id)
     l0_prompt = _load_prompt_text("layer0-cleaner")
-    l0_result = call_deepseek(
-        api_key, l0_prompt,
+    l0_result, l0_parsed = _call_l0_cleaner(
+        api_key,
+        l0_prompt,
         json.dumps(_prepare_raw_data_for_llm(raw_data), ensure_ascii=False, indent=2),
-        temperature=0.1, max_tokens=4096, timeout=120,
+        company_name,
     )
     _check_cancel()
 
     # ── L0 质量门控：校验输出完整性，不通过则阻断 L1/L2/L3 ──
-    try:
-        l0_parsed = _extract_json(l0_result)
-    except ValueError as e:
-        raise L0GateError(
-            f"L0 输出无法解析为 JSON，中止 {company_name} 研究: {e}"
-        )
     if not isinstance(l0_parsed, dict):
         raise L0GateError(
             f"L0 输出不是 JSON 对象 (got {type(l0_parsed).__name__})，中止 {company_name} 研究"
@@ -2314,6 +2321,45 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
     return all_records
 
 
+def _call_l0_cleaner(api_key: str, prompt: str, user_message: str, company_name: str) -> tuple[str, dict]:
+    """Run L0 and retry with a larger completion budget if the JSON is truncated."""
+    attempts = (
+        (4096, 120),
+        (8192, 180),
+        (12288, 240),
+    )
+    last_error: ValueError | None = None
+
+    for index, (max_tokens, timeout) in enumerate(attempts):
+        retry_hint = ""
+        if index:
+            retry_hint = (
+                "\n\n重要：上一轮 L0 输出不是完整 JSON。请压缩每个摘要字段，"
+                "只输出一个可被 json.loads 解析的完整 JSON 对象，不要 Markdown。"
+            )
+        result = call_deepseek(
+            api_key,
+            prompt + retry_hint,
+            user_message,
+            temperature=0.1,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        try:
+            parsed = _extract_json(result)
+        except ValueError as e:
+            last_error = e
+            if index < len(attempts) - 1 and _looks_like_truncated_json(result):
+                continue
+            break
+        return result, parsed
+
+    detail = last_error or ValueError("unknown parse error")
+    raise L0GateError(
+        f"L0 输出无法解析为 JSON，中止 {company_name} 研究: {detail}"
+    )
+
+
 def _extract_json(text: str) -> dict:
     match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text, flags=re.IGNORECASE)
     if match:
@@ -2343,6 +2389,17 @@ def _extract_json(text: str) -> dict:
         pass
 
     raise ValueError(f"Cannot parse JSON from: {text[:200]}...")
+
+
+def _looks_like_truncated_json(text: str) -> bool:
+    clean = str(text or "").strip()
+    if clean.startswith("```"):
+        match = re.search(r'```(?:json)?\s*([\s\S]*)', clean, flags=re.IGNORECASE)
+        if match:
+            clean = match.group(1).strip()
+    if not clean.startswith("{"):
+        return False
+    return _find_json_object(clean) is None
 
 
 def _is_missing_value(value) -> bool:
@@ -2788,11 +2845,17 @@ def run_pipeline(company_name: str, company_url: str,
                 }, job_id=job_id)
                 supplement = _search_tavily(extra, progress_callback, job_id)
                 _merge_tavily_results(raw, supplement)
+                # 回写 _source_summary，让 UI 看到 Tavily 补采结果
+                tavily_summary = _summarize_collection_source("tavily", raw.get("tavily", []))
+                raw["_source_summary"]["tavily"] = tavily_summary
+                raw["_source_summary"]["tavily_search"] = tavily_summary
                 raw["_evidence_pool"] = _build_evidence_pool(raw)
                 _persist_evidence(company_name, raw["_evidence_pool"])
                 raw["_pre_gap_refetch"] = {"extra_queries": len(extra), "reason": "low_initial_recall"}
                 _report(progress_callback, "补采", {
                     "message": f"预补采完成，证据池更新为 {len(raw['_evidence_pool'])} 条",
+                    "sources": {"tavily": raw["_source_summary"]["tavily"],
+                               "tavily_search": raw["_source_summary"]["tavily"]},
                 }, job_id=job_id)
         else:
             raw["_pre_gap_refetch"] = {"extra_queries": 0, "reason": "website_or_secondary_sources_sufficient"}
@@ -2907,6 +2970,10 @@ def run_pipeline(company_name: str, company_url: str,
                     if gap_queries:
                         supplement = _search_tavily(gap_queries, progress_callback, job_id)
                         _merge_tavily_results(raw, supplement)
+                        # 回写 _source_summary，让 UI 看到 Tavily 补采结果
+                        tavily_summary = _summarize_collection_source("tavily", raw.get("tavily", []))
+                        raw["_source_summary"]["tavily"] = tavily_summary
+                        raw["_source_summary"]["tavily_search"] = tavily_summary
                         raw["_evidence_pool"] = _build_evidence_pool(raw)
                         _persist_evidence(company_name, raw["_evidence_pool"])
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 
 FIELD_INTENT_MAP: dict[str, str] = {
+    "market_track": "market_size",
+    "market_subtrack": "market_size",
     "market_landscape_summary": "market_size",
     "market_landscape_top_players": "competition",
     "market_size_value": "market_size",

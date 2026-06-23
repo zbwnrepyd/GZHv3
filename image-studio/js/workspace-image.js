@@ -32,7 +32,7 @@ const WorkspaceImage = {
     SearchPanel.setContext(company, slot.asset_key);
     VariantSidebar.setContext(company, slot.asset_key);
     SearchPanel.showAll();
-    SearchPanel.setSlotImage(slot.local_path || '');
+    SearchPanel.setSlotImage(slot.local_path || '', slot.status || '');
 
     let queries = QueryGen.get(company, slot.asset_key);
     if (!queries && loadCardMarkdown && slot.card_index) {

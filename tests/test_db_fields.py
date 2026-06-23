@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(ROOT, "webapp"))
 
 import app as app_module
 from repositories.field_repo import insert_research_field, upsert_final_field
+from services.field_service import load_field_contract
 
 
 def _init_db(sql_path: str) -> str:
@@ -82,6 +83,22 @@ class AllFieldsAPITests(unittest.TestCase):
         self.assertIn("founded_year", keys)
         self.assertIn("std_only_field", keys)
         self.assertIn("biz_only_field", keys)
+
+    def test_all_fields_expands_to_contract_when_research_is_partial(self):
+        """research_fields 只有部分字段时，数据库全字段面板仍展示完整字段清单。"""
+        insert_research_field(self.research_db, "DemoCo", "standard",
+                              "company_name", "公司名", "DemoCo", "llm_extract", "", "high")
+        resp = self.client.get("/api/company/DemoCo/all-fields")
+        data = resp.get_json()
+        contract_total = sum(
+            len(group.get("fields", []))
+            for group in load_field_contract().get("groups", [])
+        )
+        keys = {f["field_key"] for f in data["fields"]}
+        self.assertGreaterEqual(data["total"], contract_total)
+        self.assertIn("company_name", keys)
+        self.assertIn("company_type", keys)
+        self.assertEqual(data["research_counts"]["standard"], 1)
 
     def test_all_fields_version_values_side_by_side(self):
         """同一字段的三版本值应分别展示"""

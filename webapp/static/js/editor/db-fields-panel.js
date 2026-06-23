@@ -17,7 +17,7 @@ const DbFieldsPanel = {
   async load(companyName) {
     const tbody = document.querySelector('#db-fields-table tbody');
     const countEl = document.getElementById('db-fields-count');
-    if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text-subtle);">加载中...</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text-subtle);">加载中...</td></tr>';
 
     try {
       const resp = await fetch(`/api/company/${encodeURIComponent(companyName)}/all-fields`);
@@ -69,7 +69,7 @@ const DbFieldsPanel = {
         });
       }
     } catch (e) {
-      if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:#EF4444;">加载失败: ${this._esc(e.message)}</td></tr>`;
+      if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="padding:20px;text-align:center;color:#EF4444;">加载失败: ${this._esc(e.message)}</td></tr>`;
     }
   },
 

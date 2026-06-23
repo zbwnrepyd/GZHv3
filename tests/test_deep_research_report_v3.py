@@ -242,7 +242,7 @@ class DeepResearchReportV3Tests(unittest.TestCase):
 
         self.assertEqual(by_key["market_size_value"]["value_type"], "number")
         self.assertEqual(by_key["market_size_value"]["page_no"], 2)
-        self.assertEqual(by_key["market_size_value"]["sort_order"], 2)
+        self.assertEqual(by_key["market_size_value"]["sort_order"], 4)
         self.assertEqual(by_key["market_landscape_top_players"]["value_type"], "json")
         self.assertEqual(by_key["ltv_cac_is_benchmark"]["page_no"], 6)
         self.assertEqual(by_key["competitors_top3"]["page_no"], 8)

@@ -12,18 +12,6 @@ def _skipped(source_family: str, reason: str = "missing_credentials") -> dict:
     return {"status": "skipped", "source_family": source_family, "reason": reason, "items": []}
 
 
-def builtwith_lookup(domain: str, api_key: str = "") -> dict:
-    if not api_key:
-        return _skipped("builtwith")
-    resp = requests.get(
-        "https://api.builtwith.com/v21/api.json",
-        params={"KEY": api_key, "LOOKUP": domain},
-        timeout=20,
-    )
-    resp.raise_for_status()
-    return {"status": "ok", "source_family": "builtwith", "items": resp.json()}
-
-
 def wappalyzer_lookup(url: str, api_key: str = "") -> dict:
     if not api_key:
         return _skipped("wappalyzer")

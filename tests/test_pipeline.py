@@ -50,6 +50,24 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertEqual(parsed["company_type"], "AI搜索")
         self.assertEqual(parsed["data_confidence"], "高")
 
+    def test_l0_cleaner_retries_truncated_json_with_larger_budget(self):
+        truncated = '{"company_name": "DemoCo", "company_def": "AI design tool"'
+        valid = '{"company_name": "DemoCo", "company_def": "AI design tool"}'
+
+        with patch.object(pipeline, "call_deepseek", side_effect=[truncated, valid]) as call:
+            result, parsed = pipeline._call_l0_cleaner(
+                "key",
+                "prompt",
+                '{"evidence_pool": []}',
+                "DemoCo",
+            )
+
+        self.assertEqual(result, valid)
+        self.assertEqual(parsed["company_name"], "DemoCo")
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(call.call_args_list[0].kwargs["max_tokens"], 4096)
+        self.assertEqual(call.call_args_list[1].kwargs["max_tokens"], 8192)
+
     def test_l3_error_fails_before_writing_database(self):
         bad_records = [{"company_name": "BadCo", "version": "standard", "_error": "bad json"}]
         with patch.object(pipeline, "_collect_via_adapters", return_value={}), \

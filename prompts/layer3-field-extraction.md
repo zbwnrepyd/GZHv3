@@ -109,11 +109,13 @@
   // ================================================================
   // V3 专用字段（公司简介 Page 2）
   // ================================================================
-  "market_landscape_summary": "赛道市场格局一句话描述（200字内，含Top玩家名）。找不到填「暂缺」。",
+  "market_track": "赛道分类（如 AI代码助手、AI图像生成、AI视频生成。30字内）。找不到填「暂缺」。",
+  "market_subtrack": "细分赛道（如 企业级AI编码平台、消费级图像编辑。50字内）。细分赛道是赛道的子类，不必填赛道名已包含的词汇。找不到填「暂缺」。",
+  "market_landscape_summary": "赛道市场格局描述（200字内，含Top玩家名）。找不到填「暂缺」。",
   "market_landscape_top_players": [
     {"name": "玩家名", "description": "一句话描述", "market_position": "市场定位"}
   ],
-  "market_size_value": 45.2,
+  "market_size_value": "赛道市场规模数值（亿美元，如 45.2）。必须是数字或 null，不要填文字。找不到填 null。",
   "market_size_currency": "USD/CNY/EUR",
   "market_size_year": 2024,
   "tam_value": "TAM数值（如 180.5）。如果前文 tam 字段为文本格式「暂缺」则此处填 null。",

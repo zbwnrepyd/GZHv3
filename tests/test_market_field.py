@@ -330,13 +330,11 @@ class TestMarketFieldManifestConformance(unittest.TestCase):
                 self.assertTrue(entry.get("allow_proxy"),
                                 f"{fk} must have allow_proxy=true")
 
-    def test_market_size_value_has_required_context(self):
-        """market_size_value 必须声明 required_context"""
+    def test_market_size_value_allows_proxy(self):
+        """market_size_value allow_proxy 为 true，空值时返回 proxy 而非 manual_needed"""
         entry = self.manifest.get("market_size_value", {})
-        required = entry.get("required_context", [])
-        self.assertIn("region", required)
-        self.assertIn("year", required)
-        self.assertIn("source", required)
+        self.assertTrue(entry.get("allow_proxy"))
+        self.assertEqual(entry.get("if_missing"), "manual_needed")
 
     def test_tam_value_has_required_context(self):
         """tam_value 必须声明 required_context"""
@@ -379,17 +377,16 @@ class TestMarketFieldIntegration(unittest.TestCase):
         cls.manifest = _load_manifest()
 
     def test_market_size_value_with_manifest_entry_no_value(self):
-        """使用真实 manifest 条目：空值 + 缺口径 → manual_needed"""
+        """使用真实 manifest 条目：空值 + allow_proxy → proxy"""
         entry = self.manifest.get("market_size_value", {})
         result = resolve_field(
             "market_size_value", None,
             {}, entry,
             evidence_span_ids=[],
         )
-        # manifest 条目有 required_context 但无 region/year/source 值
-        # → missing_ctx 非空 → manual_needed
-        self.assertEqual(result.resolution_status, "manual_needed",
-                         "Real manifest: empty market_size_value → manual_needed")
+        # allow_proxy=true 且 removed required_context → proxy（允许用行业估算兜底）
+        self.assertEqual(result.resolution_status, "proxy",
+                         "Real manifest: empty market_size_value with allow_proxy → proxy")
         self.assertNotEqual(result.resolution_status, "confirmed")
 
     def test_market_size_value_with_manifest_entry_has_value(self):

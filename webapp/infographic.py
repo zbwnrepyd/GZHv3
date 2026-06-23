@@ -597,12 +597,14 @@ def _build_competitive_landscape_html(
     for c in domain:
         n = str(c.get("display_name") or c.get("company_name") or "")
         is_hi = (c.get("company_name") or "").strip().lower() == highlight.strip().lower()
+        is_estimated = bool(c.get("estimated_position"))
         x_raw = _score(c.get("score_incumbent_attention"))
         y_raw = _score(c.get("score_defensibility"))
         points.append({
             "name": n,
             "value": [x_raw, y_raw],
             "is_highlight": is_hi,
+            "is_estimated": is_estimated,
         })
 
     # 动态标题
@@ -628,13 +630,34 @@ def _build_competitive_landscape_html(
     result += 'var series=[{\n'
     result += '  type:"scatter", data:points,\n'
     result += '  symbolSize:function(val,params){\n'
-    result += '    return params.data&&params.data.is_highlight?22:14;\n'
+    result += '    if(params.data&&params.data.is_highlight) return 22;\n'
+    result += '    if(params.data&&params.data.is_estimated) return 16;\n'
+    result += '    return 14;\n'
     result += '  },\n'
     result += '  itemStyle:{\n'
-    result += '    color:function(params){return params.data&&params.data.is_highlight?"' + accent + '":"rgba(27,42,74,0.35)";},\n'
-    result += '    opacity:function(params){return params.data&&params.data.is_highlight?1:0.65;},\n'
-    result += '    borderColor:function(params){return params.data&&params.data.is_highlight?"#FFFFFF":"transparent";},\n'
-    result += '    borderWidth:function(params){return params.data&&params.data.is_highlight?2:0;},\n'
+    result += '    color:function(params){\n'
+    result += '      if(params.data&&params.data.is_highlight) return "' + accent + '";\n'
+    result += '      if(params.data&&params.data.is_estimated) return "rgba(27,42,74,0.28)";\n'
+    result += '      return "rgba(27,42,74,0.35)";\n'
+    result += '    },\n'
+    result += '    opacity:function(params){\n'
+    result += '      if(params.data&&params.data.is_highlight) return 1;\n'
+    result += '      if(params.data&&params.data.is_estimated) return 0.55;\n'
+    result += '      return 0.65;\n'
+    result += '    },\n'
+    result += '    borderColor:function(params){\n'
+    result += '      if(params.data&&params.data.is_highlight) return "#FFFFFF";\n'
+    result += '      if(params.data&&params.data.is_estimated) return "rgba(27,42,74,0.4)";\n'
+    result += '      return "transparent";\n'
+    result += '    },\n'
+    result += '    borderWidth:function(params){\n'
+    result += '      if(params.data&&params.data.is_highlight) return 2;\n'
+    result += '      if(params.data&&params.data.is_estimated) return 1.5;\n'
+    result += '      return 0;\n'
+    result += '    },\n'
+    result += '    borderType:function(params){\n'
+    result += '      return params.data&&params.data.is_estimated?"dashed":"solid";\n'
+    result += '    },\n'
     result += '  },\n'
     result += '  label:{\n'
     result += '    show:true,\n'
@@ -667,7 +690,8 @@ def _build_competitive_landscape_html(
     result += '  tooltip:{trigger:"item",\n'
     result += '    formatter:function(p){\n'
     result += '      var d=p.data||{};\n'
-    result += '      return "<b>"+d.name+"</b><br/>"\n'
+    result += '      var est=d.is_estimated?" ≈（估算）":"";\n'
+    result += '      return "<b>"+d.name+est+"</b><br/>"\n'
     result += '        +"巨头关注度："+(d.value[0]!=null?d.value[0].toFixed(1)+" / 10":"-")+"<br/>"\n'
     result += '        +"护城河强度："+(d.value[1]!=null?d.value[1].toFixed(1)+" / 10":"-");\n'
     result += '    }\n'
@@ -707,6 +731,8 @@ def _build_competitive_landscape_html(
     result += '    {type:"text",left:246,top:414,style:{text:"边缘区",fill:"rgba(180,180,180,0.18)",fontSize:28,fontWeight:900,textAlign:"center",textVerticalAlign:"middle"}},\n'
     if no_data:
         result += '    {type:"text",left:"center",top:"middle",style:{text:"暂无可用图表数据",fill:"' + muted + '",fontSize:18,fontWeight:700,textAlign:"center"}},\n'
+    if any(p.get("is_estimated") for p in points):
+        result += '    {type:"text",left:76,top:' + str(height - 28) + ',style:{text:"≈ 估算位置",fill:"rgba(27,42,74,0.35)",fontSize:11,fontWeight:500}},\n'
     result += '  ],\n'
     result += '};\n'
     result += "var chart=echarts.init(document.getElementById('chart'));\n"

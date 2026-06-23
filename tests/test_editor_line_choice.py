@@ -58,6 +58,66 @@ console.log(JSON.stringify(TextFinalizePanel._cardContent('card_01')));
         self.assertIn('已定稿', html)
         self.assertNotIn('missing_field', html)
 
+    def test_text_finalize_panel_moves_empty_fields_out_of_main_list(self):
+        html = run_text_finalize_script(
+            """
+TextFinalizePanel._cards = [{
+  card_id: 'card_01',
+  card_title: '公司简介',
+  items: [
+    { item_type: 'field', item_key: 'core_business', display_role: 'body' },
+    { item_type: 'field', item_key: 'market_size_value', display_role: 'body' },
+  ],
+}];
+TextFinalizePanel._fieldsByKey = {
+  core_business: {
+    label: '核心业务',
+    versions: { standard: 'AI 图像生成' },
+    final_value: '',
+    status: 'draft',
+  },
+  market_size_value: {
+    label: '赛道市场规模',
+    versions: {},
+    final_value: '',
+    status: 'draft',
+  },
+};
+console.log(JSON.stringify(TextFinalizePanel._cardContent('card_01')));
+"""
+        )
+
+        self.assertIn('核心业务', html)
+        self.assertIn('AI 图像生成', html)
+        self.assertNotIn('class="tf-field-card " data-field="market_size_value"', html)
+        self.assertIn('待补字段', html)
+        self.assertIn('赛道市场规模', html)
+
+    def test_text_finalize_panel_does_not_call_final_only_values_empty(self):
+        html = run_text_finalize_script(
+            """
+TextFinalizePanel._cards = [{
+  card_id: 'card_01',
+  card_title: '能力分析',
+  items: [
+    { item_type: 'field', item_key: 'ltv', display_role: 'body' },
+  ],
+}];
+TextFinalizePanel._fieldsByKey = {
+  ltv: {
+    label: 'LTV 生命周期价值',
+    versions: {},
+    final_value: '6:1–8:1（SaaS 行业中位数）',
+    status: 'draft',
+  },
+};
+console.log(JSON.stringify(TextFinalizePanel._cardContent('card_01')));
+"""
+        )
+
+        self.assertIn('6:1–8:1（SaaS 行业中位数）', html)
+        self.assertNotIn('暂无研究数据', html)
+
 
 if __name__ == "__main__":
     unittest.main()

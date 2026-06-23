@@ -96,7 +96,7 @@ const LayoutApp = {
       const r = await fetch(`/api/render-data/${encodeURIComponent(this._company)}?set=${this._setKey}`);
       if (!r.ok) throw new Error(`render-data ${r.status}`);
       this._data = await r.json();
-      this._cards = this._data.cards || [];
+      this._cards = (this._data.cards || []).map((card, index) => this._normalizeRenderCard(card, index));
       this._assetByKey = {};
       this._cards.forEach(card => {
         (card.items || []).forEach(item => {
@@ -117,6 +117,57 @@ const LayoutApp = {
       this._cards = [];
       this._setStatus('加载失败');
     }
+  },
+
+  _normalizeRenderCard(card, index) {
+    const rawLayout = card.layout || {};
+    const templateId = card.template_id || rawLayout.template_id || '';
+    const items = [
+      ...(card.items || []).map(item => this._normalizeRenderItem(item, 'field')),
+      ...(card.media || []).map(item => this._normalizeRenderItem(item, 'media')),
+    ].filter(Boolean);
+
+    return {
+      ...card,
+      card_index: card.card_index ?? index + 1,
+      card_title: card.card_title || card.title || `卡片${index + 1}`,
+      enabled: card.enabled !== false,
+      template_id: templateId,
+      items,
+      layout: {
+        ...rawLayout,
+        overrides: rawLayout.overrides || {},
+      },
+    };
+  },
+
+  _normalizeRenderItem(item, defaultType = 'field') {
+    if (!item) return null;
+    const type = item.item_type || (item.asset_key ? 'media' : defaultType);
+    if (type === 'media') {
+      const key = item.item_key || item.asset_key;
+      if (!key) return null;
+      return {
+        ...item,
+        item_type: 'media',
+        item_key: key,
+        item_label: item.item_label || item.media_label || item.label || key,
+        media_label: item.media_label || item.item_label || item.label || key,
+        url: item.url || '',
+      };
+    }
+
+    const key = item.item_key || item.field_key;
+    if (!key) return null;
+    return {
+      ...item,
+      item_type: 'field',
+      item_key: key,
+      item_label: item.item_label || item.field_label || item.label || key,
+      field_label: item.field_label || item.item_label || item.label || key,
+      value: item.value ?? '',
+      display_role: item.display_role || item.role || 'body',
+    };
   },
 
   async _loadTemplates() {

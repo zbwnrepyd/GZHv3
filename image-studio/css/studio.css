@@ -173,6 +173,23 @@ a:hover { text-decoration: underline; }
   text-align: center;
 }
 .preview-stage .preview-empty .empty-icon { font-size: 40px; margin-bottom: 8px; }
+.preview-stage .preview-empty .btn-capture-now {
+  margin-top: 12px;
+  padding: 8px 24px;
+  font-size: 13px;
+  font-family: var(--font);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.preview-stage .preview-empty .btn-capture-now:hover { opacity: 0.85; }
+.preview-stage .preview-empty .btn-capture-now:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 
 /* 上部搜索结果网格区 */
 .search-results-area {

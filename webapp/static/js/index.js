@@ -1,11 +1,38 @@
 const CARD_COUNT = 8;
 const SOURCE_LABELS = {
+  scrapling_search: '开放网页搜索',
   tavily: 'Tavily 搜索',
+  tavily_search: 'Tavily 搜索',
+  tavily_extract: 'Tavily 深抓',
+  official_site: '官网抓取',
   github: 'GitHub',
   youtube: 'YouTube',
+  producthunt: 'Product Hunt',
+  sec: 'SEC',
+  openbb: 'OpenBB',
+  companieshouse: 'Companies House',
+  whatweb: 'WhatWeb',
   website: '官网抓取',
 };
-const SOURCE_ORDER = ['tavily', 'github', 'youtube', 'website'];
+const SOURCE_ORDER = ['official_site', 'scrapling_search', 'github', 'youtube', 'producthunt', 'whatweb', 'sec', 'companieshouse', 'openbb', 'tavily_search', 'tavily_extract'];
+const RESEARCH_OPTION_DEFAULTS = {
+  scrapling_search: true,
+  official_site: true,
+  tavily_search: true,
+  tavily_extract: true,
+  github: true,
+  producthunt: true,
+  youtube: true,
+  sec: true,
+  companieshouse: true,
+  openbb: true,
+  whatweb: true,
+  gap_refetch: true,
+  document_chunking: true,
+  context_packer: true,
+  evidence_span_binding: true,
+  image_collection: true,
+};
 const RESEARCH_PROGRESS_STEPS = [
   { id: 'start', label: '启动', percent: 5, matches: ['启动', '准备', '提交', '恢复'] },
   { id: 'collect', label: '信息采集', percent: 20, matches: ['采集', '官网抓取', 'Tavily', 'GitHub', 'YouTube'] },
@@ -30,6 +57,10 @@ const ResearchDesk = {
     document.getElementById('btn-start-research').addEventListener('click', () => this.startResearch());
     document.getElementById('btn-stop-research').addEventListener('click', () => this.stopResearch());
     document.getElementById('btn-refresh-companies').addEventListener('click', () => this.loadCompanies());
+    document.getElementById('btn-reset-research-options')?.addEventListener('click', () => this.resetResearchOptions());
+    document.querySelectorAll('[data-research-option]').forEach(input => {
+      input.addEventListener('change', () => this.saveResearchOptions());
+    });
     document.getElementById('company-table-body').addEventListener('click', (event) => {
       const refillButton = event.target.closest('[data-refill-company]');
       if (refillButton) {
@@ -41,8 +72,52 @@ const ResearchDesk = {
       if (!row) return;
       this.toggleCompanyDetails(decodeURIComponent(row.dataset.company));
     });
+    this.loadResearchOptions();
     this.loadCompanies();
     this._restoreActiveJob();
+  },
+
+  loadResearchOptions() {
+    let saved = {};
+    try {
+      saved = JSON.parse(localStorage.getItem('gzh2_research_options') || '{}') || {};
+    } catch {
+      saved = {};
+    }
+    const options = { ...RESEARCH_OPTION_DEFAULTS, ...saved };
+    document.querySelectorAll('[data-research-option]').forEach(input => {
+      const key = input.dataset.researchOption;
+      input.checked = Boolean(options[key]);
+    });
+    this.updateResearchOptionsSummary();
+  },
+
+  collectResearchOptions() {
+    const options = { ...RESEARCH_OPTION_DEFAULTS };
+    document.querySelectorAll('[data-research-option]').forEach(input => {
+      options[input.dataset.researchOption] = Boolean(input.checked);
+    });
+    return options;
+  },
+
+  saveResearchOptions() {
+    const options = this.collectResearchOptions();
+    localStorage.setItem('gzh2_research_options', JSON.stringify(options));
+    this.updateResearchOptionsSummary();
+  },
+
+  resetResearchOptions() {
+    localStorage.removeItem('gzh2_research_options');
+    this.loadResearchOptions();
+  },
+
+  updateResearchOptionsSummary() {
+    const el = document.getElementById('research-options-summary');
+    if (!el) return;
+    const options = this.collectResearchOptions();
+    const enabled = Object.values(options).filter(Boolean).length;
+    const scraplingText = options.scrapling_search ? 'Scrapling 已启用' : 'Scrapling 未启用';
+    el.textContent = `${enabled}/${Object.keys(options).length} 个模块启用，${scraplingText}`;
   },
 
   async loadCompanies() {
@@ -223,6 +298,8 @@ const ResearchDesk = {
       return;
     }
     if (btn.disabled || this.activeJobId) return;
+    const researchOptions = this.collectResearchOptions();
+    this.saveResearchOptions();
 
     clearInterval(this.pollTimer);
     this.pollTimer = null;
@@ -236,11 +313,12 @@ const ResearchDesk = {
     this.setProgress('running', '启动', '正在提交研究任务...', {}, []);
 
     try {
-      const job = await API.startResearch(companyName, companyUrl);
+      const job = await API.startResearch(companyName, companyUrl, researchOptions);
       this.activeJobId = job.job_id;
       localStorage.setItem('gzh2_active_job', JSON.stringify({
         jobId: job.job_id,
         companyName,
+        researchOptions,
         ts: Date.now(),
       }));
       document.getElementById('btn-stop-research').style.display = '';
@@ -306,12 +384,51 @@ const ResearchDesk = {
 
   async stopResearch() {
     if (!this.activeJobId || this.activeJobId === 'starting') return;
+    const jobId = this.activeJobId;
+    this.clearActiveResearchRun();
     try {
-      await fetch(`/api/research/stop/${encodeURIComponent(this.activeJobId)}`, { method: 'POST' });
-      this.setProgress('cancelling', '正在停止', '等待当前步骤完成...', undefined, []);
+      const response = await fetch(`/api/research/stop/${encodeURIComponent(jobId)}`, { method: 'POST' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `停止失败：HTTP ${response.status}`);
+      }
     } catch (e) {
       console.error('停止失败:', e);
     }
+  },
+
+  clearActiveResearchRun() {
+    clearInterval(this.pollTimer);
+    this.pollTimer = null;
+    this.activeJobId = null;
+    this.pollInFlight = false;
+    this.currentProgressPercent = 0;
+    this.currentSources = {};
+    localStorage.removeItem('gzh2_active_job');
+
+    const startBtn = document.getElementById('btn-start-research');
+    if (startBtn) startBtn.disabled = false;
+    const stopBtn = document.getElementById('btn-stop-research');
+    if (stopBtn) stopBtn.style.display = 'none';
+
+    const complete = document.getElementById('research-complete');
+    if (complete) {
+      complete.classList.add('hidden');
+      complete.innerHTML = '';
+    }
+
+    const progress = document.getElementById('research-progress');
+    if (progress) {
+      progress.classList.add('hidden');
+      progress.dataset.status = 'idle';
+    }
+    document.getElementById('research-stage').textContent = '待命';
+    document.getElementById('research-percent').textContent = '0%';
+    document.getElementById('research-progress-fill').style.width = '0%';
+    document.getElementById('research-detail').textContent = '';
+    document.getElementById('research-step-track').innerHTML = '';
+    document.getElementById('research-event-list').innerHTML = '';
+    document.getElementById('source-status-grid').innerHTML = '';
   },
 
   async _restoreActiveJob() {
@@ -423,6 +540,10 @@ const ResearchDesk = {
       skipped: '跳过',
       pending: '等待',
       collecting: '采集中',
+      warning: '不足',
+      not_configured: '未配置',
+      disabled: '未启用',
+      not_applicable: '不适用',
     }[status] || status;
   },
 

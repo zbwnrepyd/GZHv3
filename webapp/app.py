@@ -18,7 +18,7 @@ from asset_resolver import resolve_company_assets
 from asset_pipeline import (
     collect_all_assets, _download, _variant_path, _render_osm_map,
     _company_image_dir, _image_url_path, _variant_url_path,
-    _resolve_office_location, _geocode_search_text,
+    _resolve_office_location, _geocode_search_text, _extract_company_url,
 )
 from infographic import (
     generate_flywheel_from_markdown, generate_timeline_from_markdown,
@@ -92,7 +92,11 @@ def _init_new_composition_dbs():
 
     # 迁移：证据层 + 字段分辨率（009-010，幂等）
     _run_migrations(config.DB_PATH_RESEARCH, ["009_evidence_items.sql",
-                                               "010_field_resolution.sql"])
+                                               "010_field_resolution.sql",
+                                               "013_source_documents.sql",
+                                               "014_evidence_spans.sql",
+                                               "016_final_card_values.sql",
+                                               "031_document_chunks.sql"])
 
     # 迁移：v3 字段扩列（011 research库 + 012 final库，幂等）
     _run_migrations(config.DB_PATH_RESEARCH, ["011_v3_fields.sql"])
@@ -158,6 +162,35 @@ def _local_file_from_browser_path(path: str) -> str:
 # 后台任务状态
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
+
+
+_RESEARCH_OPTION_DEFAULTS = {
+    "scrapling_search": True,
+    "official_site": True,
+    "tavily_search": True,
+    "tavily_extract": True,
+    "github": True,
+    "producthunt": True,
+    "youtube": True,
+    "sec": True,
+    "openbb": True,
+    "companieshouse": True,
+    "whatweb": True,
+    "gap_refetch": True,
+    "document_chunking": True,
+    "context_packer": True,
+    "evidence_span_binding": True,
+    "image_collection": True,
+}
+
+
+def _sanitize_research_options(value) -> dict:
+    options = dict(_RESEARCH_OPTION_DEFAULTS)
+    if isinstance(value, dict):
+        for key in options:
+            if key in value:
+                options[key] = bool(value[key])
+    return options
 
 
 # ── API：公司列表 ─────────────────────────────────────────────
@@ -261,7 +294,39 @@ def save_research():
 # ── API：启动研究流水线 ──────────────────────────────────────
 
 
-def _run_pipeline_job(job_id: str, company_name: str, company_url: str):
+def _count_research_fields_for_company(company_name: str, company_key: str = "") -> int:
+    """Count normalized field rows for status text; legacy research IDs may be empty."""
+    import sqlite3
+
+    try:
+        with sqlite3.connect(config.DB_PATH_RESEARCH) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_fields'"
+            ).fetchone()
+            if not exists:
+                return 0
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(research_fields)").fetchall()}
+            clauses = []
+            params = []
+            if "company_name" in cols and company_name:
+                clauses.append("company_name = ?")
+                params.append(company_name)
+            if "company_key" in cols and company_key:
+                clauses.append("company_key = ?")
+                params.append(company_key)
+            if not clauses:
+                return 0
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM research_fields WHERE {' OR '.join(clauses)}",
+                params,
+            ).fetchone()
+            return int(row[0] if row else 0)
+    except Exception:
+        return 0
+
+
+def _run_pipeline_job(job_id: str, company_name: str, company_url: str,
+                      research_options: dict | None = None):
     from company_identity import build_company_identity
     identity = build_company_identity(company_name, company_url)
     database.create_job(config.DB_PATH_RESEARCH, job_id, company_name, company_url,
@@ -297,26 +362,36 @@ def _run_pipeline_job(job_id: str, company_name: str, company_url: str):
             progress_callback=on_progress,
             job_id=job_id,
             cancel_token=cancel_token,
+            research_options=research_options or {},
         )
+        field_count = _count_research_fields_for_company(company_name, identity.company_key)
+        done_detail = f"共 {field_count} 个字段" if field_count else f"共 {len(ids)} 条记录"
         with _jobs_lock:
             if job_id in _jobs:
+                if _jobs[job_id].get("cancelled"):
+                    raise PipelineCancelledError("用户取消研究")
                 _jobs[job_id]["status"] = "done"
                 _jobs[job_id]["record_ids"] = ids
                 _jobs[job_id]["stage"] = "完成"
-                _jobs[job_id]["detail"] = f"共 {len(ids)} 条记录"
+                _jobs[job_id]["detail"] = done_detail
         database.update_job(config.DB_PATH_RESEARCH, job_id,
                             status="done", record_ids=json.dumps(ids),
-                            stage="完成", detail=f"共 {len(ids)} 条记录")
+                            stage="完成", detail=done_detail)
 
-        threading.Thread(target=_collect_assets_silently, args=(company_name,), daemon=True).start()
+        if (research_options or {}).get("image_collection", True):
+            threading.Thread(target=_collect_assets_silently, args=(company_name,), daemon=True).start()
     except PipelineCancelledError:
         with _jobs_lock:
             if job_id in _jobs:
                 _jobs[job_id]["status"] = "cancelled"
                 _jobs[job_id]["stage"] = "已停止"
                 _jobs[job_id]["detail"] = "用户已停止研究"
+                _jobs[job_id]["sources"] = {}
+                _jobs[job_id]["stages"] = []
+                _jobs[job_id]["record_ids"] = []
         database.update_job(config.DB_PATH_RESEARCH, job_id,
-                            status="cancelled", stage="已停止", detail="用户已停止研究")
+                            status="cancelled", stage="已停止", detail="用户已停止研究",
+                            record_ids=None, error=None)
     except Exception as e:
         with _jobs_lock:
             if job_id in _jobs:
@@ -325,6 +400,113 @@ def _run_pipeline_job(job_id: str, company_name: str, company_url: str):
         database.update_job(config.DB_PATH_RESEARCH, job_id,
                             status="failed", error=str(e),
                             stage="失败", detail=str(e)[:200])
+
+
+def _clear_research_run_artifacts(
+    job_id: str,
+    company_name: str = "",
+    company_key: str = "",
+) -> dict:
+    """删除本次研究产生的数据，不碰人工定稿 final_fields。"""
+    import sqlite3
+
+    counts: dict[str, int] = {}
+
+    def table_exists(conn, table: str) -> bool:
+        return bool(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone())
+
+    def columns(conn, table: str) -> set[str]:
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    try:
+        conn = sqlite3.connect(config.DB_PATH_RESEARCH)
+        conn.row_factory = sqlite3.Row
+
+        if table_exists(conn, "source_documents"):
+            source_cols = columns(conn, "source_documents")
+            if "run_id" in source_cols:
+                doc_id_col = "id" if "id" in source_cols else "document_id" if "document_id" in source_cols else ""
+                doc_ids = []
+                if doc_id_col:
+                    doc_ids = [
+                        row[doc_id_col]
+                        for row in conn.execute(
+                            f"SELECT {doc_id_col} FROM source_documents WHERE run_id=?",
+                            (job_id,),
+                        ).fetchall()
+                    ]
+                if doc_ids:
+                    placeholders = ",".join("?" for _ in doc_ids)
+                    for table in ("evidence_spans", "document_chunks", "evidence_items"):
+                        if table_exists(conn, table) and "document_id" in columns(conn, table):
+                            cur = conn.execute(
+                                f"DELETE FROM {table} WHERE document_id IN ({placeholders})",
+                                doc_ids,
+                            )
+                            counts[table] = cur.rowcount
+                cur = conn.execute("DELETE FROM source_documents WHERE run_id=?", (job_id,))
+                counts["source_documents"] = cur.rowcount
+
+        for table in ("field_candidates", "context_packs", "final_card_values"):
+            if table_exists(conn, table) and "run_id" in columns(conn, table):
+                cur = conn.execute(f"DELETE FROM {table} WHERE run_id=?", (job_id,))
+                counts[table] = cur.rowcount
+
+        if company_name and table_exists(conn, "research_fields"):
+            rf_cols = columns(conn, "research_fields")
+            clauses = []
+            params = []
+            if "company_name" in rf_cols:
+                clauses.append("company_name=?")
+                params.append(company_name)
+            if company_key and "company_key" in rf_cols:
+                clauses.append("company_key=?")
+                params.append(company_key)
+            if clauses:
+                cur = conn.execute(
+                    f"DELETE FROM research_fields WHERE {' OR '.join(clauses)}",
+                    params,
+                )
+                counts["research_fields"] = cur.rowcount
+
+        if company_key:
+            for table in (
+                "company_analysis",
+                "competitors",
+                "customers",
+                "funding_rounds",
+                "founders",
+                "sectors",
+                "metrics",
+                "products",
+                "research_runs",
+                "companies",
+            ):
+                if table_exists(conn, table) and "company_key" in columns(conn, table):
+                    cur = conn.execute(f"DELETE FROM {table} WHERE company_key=?", (company_key,))
+                    counts[table] = cur.rowcount
+
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        counts["error"] = str(exc)[:200]
+    return counts
+
+
+def _cancelled_job_payload(job_id: str, company_name: str = "") -> dict:
+    return {
+        "job_id": job_id,
+        "company_name": company_name,
+        "status": "cancelled",
+        "stage": "已停止",
+        "detail": "用户已停止研究",
+        "sources": {},
+        "stages": [],
+        "record_ids": [],
+    }
 
 
 def _safe_json_parse(val):
@@ -617,6 +799,61 @@ def _load_chart_company_domain(
 
     items = [dict(r) for r in rows]
 
+    # 补充 competitors_top3（或 competitors）中未入库的竞品（估算坐标）
+    top3_raw = target_row.get("competitors_top3") or target_row.get("competitors")
+    if top3_raw and isinstance(top3_raw, str):
+        try:
+            top3_list = json.loads(top3_raw)
+        except Exception:
+            top3_list = []
+        if isinstance(top3_list, list):
+            matched_names = {str(r.get("company_name") or "").strip().lower() for r in items}
+            def _safe_score(val, default=5.0):
+                try:
+                    v = float(val)
+                    return v if v is not None and 0 <= v <= 10 else default
+                except (TypeError, ValueError):
+                    return default
+
+            target_scores = {
+                "defensibility": _safe_score(target_row.get("score_defensibility")),
+                "incumbent_attention": _safe_score(target_row.get("score_incumbent_attention")),
+            }
+            # 基于实际数据计算参考：已有竞品的平均分
+            existing_competitors = [
+                r for r in items
+                if str(r.get("company_name") or "").strip().lower() != target_name.lower()
+                and r.get("score_defensibility") is not None
+            ]
+            if existing_competitors:
+                avg_def = sum(_safe_score(c.get("score_defensibility")) for c in existing_competitors) / len(existing_competitors)
+                avg_inc = sum(_safe_score(c.get("score_incumbent_attention")) for c in existing_competitors) / len(existing_competitors)
+            else:
+                avg_def = target_scores["defensibility"]
+                avg_inc = target_scores["incumbent_attention"]
+
+            for idx, comp in enumerate(top3_list):
+                if not isinstance(comp, dict):
+                    continue
+                name = str(comp.get("name") or "").strip()
+                if not name or name.lower() in matched_names:
+                    continue
+                rank = int(comp.get("rank", idx + 1))
+                # 基于排名估算：rank1 通常护城河更强，rank3 较弱
+                rank_factor_def = {1: 1.25, 2: 1.0, 3: 0.7}.get(rank, 0.85)
+                rank_factor_inc = {1: 1.1, 2: 0.9, 3: 0.65}.get(rank, 0.8)
+                est_def = min(10.0, max(1.0, avg_def * rank_factor_def))
+                est_inc = min(10.0, max(1.0, avg_inc * rank_factor_inc))
+                items.append({
+                    "company_name": name,
+                    "display_name": name,
+                    "company_key": name.lower().replace(" ", "_"),
+                    "score_defensibility": round(est_def, 1),
+                    "score_incumbent_attention": round(est_inc, 1),
+                    "estimated_position": True,
+                })
+                matched_names.add(name.lower())
+
     # --- 诊断日志 ---
     import logging
     _log = logging.getLogger(__name__)
@@ -736,6 +973,7 @@ def start_research():
         data = request.get_json(silent=True) or {}
         company_name = data.get("company_name", "").strip()
         company_url = data.get("company_url", "").strip()
+        research_options = _sanitize_research_options(data.get("research_options"))
         if not company_name or not company_url:
             return jsonify({"error": "缺少 company_name 或 company_url"}), 400
 
@@ -750,13 +988,14 @@ def start_research():
                 "record_ids": None,
                 "sources": {},
                 "started_at": time.time(),
+                "research_options": research_options,
             }
 
         from company_identity import build_company_identity
         identity = build_company_identity(company_name, company_url)
 
         t = threading.Thread(target=_run_pipeline_job,
-                             args=(job_id, company_name, company_url), daemon=True)
+                             args=(job_id, company_name, company_url, research_options), daemon=True)
         t.start()
 
         return jsonify({
@@ -764,6 +1003,7 @@ def start_research():
             "status": "running",
             "company_key": identity.company_key,
             "display_name": identity.display_name,
+            "research_options": research_options,
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -811,7 +1051,9 @@ def get_running_research():
 
 @app.route("/api/research/stop/<job_id>", methods=["POST"])
 def stop_research(job_id: str):
-    """标记取消，pipeline 在下一个 checkpoint 检测到后优雅退出。"""
+    """立即放弃当前任务；后台 pipeline 在下一个 checkpoint 退出。"""
+    company_name = ""
+    company_key = ""
     with _jobs_lock:
         job = _jobs.get(job_id)
         if not job:
@@ -820,22 +1062,39 @@ def stop_research(job_id: str):
                 return jsonify({"error": "任务不存在或已完成"}), 404
             if db_job.get("status") not in ("running", "cancelling"):
                 return jsonify({"error": f"任务状态为 {db_job.get('status')}，无法停止"}), 409
+            company_name = db_job.get("company_name", "")
+            company_key = db_job.get("company_key", "")
             database.update_job(
                 config.DB_PATH_RESEARCH, job_id,
-                status="cancelled", stage="已停止", detail="用户已停止研究"
+                status="cancelled", stage="已停止", detail="用户已停止研究",
+                record_ids=None, error=None
             )
-            return jsonify({"status": "ok"})
-        if job.get("status") != "running":
+            cleanup = _clear_research_run_artifacts(job_id, company_name, company_key)
+            payload = _cancelled_job_payload(job_id, company_name)
+            payload["cleanup"] = cleanup
+            return jsonify(payload)
+
+        company_name = job.get("company_name", "")
+        db_job = database.get_job(config.DB_PATH_RESEARCH, job_id) or {}
+        company_key = db_job.get("company_key", job.get("company_key", ""))
+        if job.get("status") not in ("running", "cancelling", "cancelled"):
             return jsonify({"error": f"任务状态为 {job.get('status')}，无法停止"}), 409
         job["cancelled"] = True
-        job["status"] = "cancelling"
-        job["stage"] = "正在停止"
-        job["detail"] = "等待当前步骤完成..."
+        job["status"] = "cancelled"
+        job["stage"] = "已停止"
+        job["detail"] = "用户已停止研究"
+        job["sources"] = {}
+        job["stages"] = []
+        job["record_ids"] = []
     database.update_job(
         config.DB_PATH_RESEARCH, job_id,
-        status="cancelling", stage="正在停止", detail="等待当前步骤完成..."
+        status="cancelled", stage="已停止", detail="用户已停止研究",
+        record_ids=None, error=None
     )
-    return jsonify({"status": "ok"})
+    cleanup = _clear_research_run_artifacts(job_id, company_name, company_key)
+    payload = _cancelled_job_payload(job_id, company_name)
+    payload["cleanup"] = cleanup
+    return jsonify(payload)
 
 
 # ── API：保存定稿 ─────────────────────────────────────────────
@@ -1155,6 +1414,7 @@ def get_company_all_fields(company: str):
     try:
         from repositories.field_repo import get_research_fields, get_final_fields
         from repositories.field_repo import get_final_field_value, _EMPTY_FINAL
+        from services.field_service import get_fields_with_versions, _is_usable_value
 
         # 三版本 research_fields
         versions = ["standard", "business", "spread"]
@@ -1169,12 +1429,39 @@ def get_company_all_fields(company: str):
         final_index = {f["field_key"]: f for f in final_fields}
         all_keys.update(f["field_key"] for f in final_fields)
 
+        # v3 主口径：字段全集来自 fields.json，并合并 final_card_values 读模型。
+        # research_fields 可能只保存 LLM 实际抽到的字段；面板仍应展示完整可编辑字段清单。
+        complete_groups = get_fields_with_versions(
+            config.DB_PATH_RESEARCH,
+            config.DB_PATH_FINAL,
+            company,
+            card_values_db_path=config.DB_PATH_RESEARCH,
+        )
+        complete_index = {
+            f["field_key"]: f
+            for group in complete_groups
+            for f in group.get("fields", [])
+        }
+        has_any_data = bool(all_keys)
+        if not has_any_data:
+            has_any_data = any(
+                f.get("versions")
+                or f.get("card_no") is not None
+                or _is_usable_value(f.get("final_value"))
+                for f in complete_index.values()
+            )
+        if has_any_data:
+            all_keys.update(complete_index)
+
         # 从任一版本取 field_label（优先 standard）
         def _label(fk):
             for v in versions:
                 rf = research_by_version[v].get(fk)
                 if rf and rf.get("field_label"):
                     return rf["field_label"]
+            cf = complete_index.get(fk, {})
+            if cf and cf.get("field_label"):
+                return cf["field_label"]
             ff = final_index.get(fk, {})
             return ff.get("field_label", "")
 
@@ -1183,28 +1470,41 @@ def get_company_all_fields(company: str):
             std = research_by_version.get("standard", {}).get(fk, {})
             return std.get(key, "")
 
+        def _version_value(fk, version):
+            cf = complete_index.get(fk, {})
+            versions_map = cf.get("versions") or {}
+            if version in versions_map:
+                return versions_map[version]
+            return research_by_version.get(version, {}).get(fk, {}).get("field_value", "")
+
         rows = []
         for fk in sorted(all_keys):
             ff = final_index.get(fk, {})
+            cf = complete_index.get(fk, {})
             final_value = get_final_field_value(config.DB_PATH_FINAL, company, fk)
             if final_value is _EMPTY_FINAL:
                 final_display = ""
             elif final_value is not None:
                 final_display = final_value
+            elif cf.get("card_no") is not None and _is_usable_value(cf.get("final_value")):
+                final_display = cf.get("final_value")
             else:
                 final_display = None
+            resolution_status = _meta(fk, "resolution_status")
+            if not resolution_status and cf.get("card_no") is not None:
+                resolution_status = cf.get("status", "")
 
             rows.append({
                 "field_key": fk,
                 "field_label": _label(fk),
-                "value_standard": research_by_version.get("standard", {}).get(fk, {}).get("field_value", ""),
-                "value_business": research_by_version.get("business", {}).get(fk, {}).get("field_value", ""),
-                "value_spread": research_by_version.get("spread", {}).get(fk, {}).get("field_value", ""),
+                "value_standard": _version_value(fk, "standard"),
+                "value_business": _version_value(fk, "business"),
+                "value_spread": _version_value(fk, "spread"),
                 "final_value": final_display,
-                "final_status": ff.get("status") or "",
+                "final_status": ff.get("status") or (cf.get("status", "") if cf.get("card_no") is not None else ""),
                 "confidence": _meta(fk, "confidence"),
                 "source_type": _meta(fk, "source_type"),
-                "resolution_status": _meta(fk, "resolution_status"),
+                "resolution_status": resolution_status,
                 "unavailable_reason": _meta(fk, "unavailable_reason"),
                 "resolution_method": _meta(fk, "resolution_method"),
             })
@@ -1254,8 +1554,8 @@ def collect_assets(company: str):
 
         company_data = {
             "company_name": company,
-            "company_url": research.get("website_url", ""),
-            "website_url": research.get("website_url", ""),
+            "company_url": _extract_company_url(research) or research.get("website_url", ""),
+            "website_url": _extract_company_url(research) or research.get("website_url", ""),
             "location": research.get("location", ""),
             "founder_name": research.get("founder_name", ""),
             "main_product_name": research.get("main_product_name", ""),

@@ -106,7 +106,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 网页抓取用本地 trafilatura（`webapp/firecrawl_local.py`），不依赖外部 API
 - 环境变量只读取系统环境变量和项目根目录 `.env`；不要读取或恢复用户目录 `~/.env`
 - Tavily 可用 `TAVILY_API_KEYS` 配置逗号分隔的多 Key，额度限制时自动尝试下一个；不要把真实 Key 写进代码、测试、文档或日志
-- Tavily 默认走自适应采集：标准/深度预算默认 14/24，先跑 `TAVILY_INITIAL_QUERY_LIMIT=10` 个 basic 查询且不带 raw_content，再按证据缺口升级 advanced 查询；`TAVILY_CACHE_TTL_SECONDS` 默认 86400 秒。改预算/深度/缓存时同步 README 和 runbook
+- Tavily 不作为第一梯队采集源（由 Scrapling + 官网 + GitHub/YouTube 等先跑），只在第一轮采集完成后通过 pre-gap refetch 按阈值自动触发补采。运行时仍走自适应模式：`TAVILY_INITIAL_QUERY_LIMIT=10`（basic）、`TAVILY_CACHE_TTL_SECONDS=86400`；补采触发阈值见下方环境变量
 - 成本目标 < $0.20/次研究
 - 套卡系统（`card_set_key`）：v1 内置 8 张（经典）、v2 内置 7 张（新版）、v3 内置 8 张（研究增强版）。定稿台顶部切换套卡，卡片设置按套卡独立编排，排版中心和导出同步 `?set=` 参数；`canvas/screenshot.js --set` 支持 v1/v2/v3。v1 卡片7/8 为竞争格局+总结；v2 无独立总结卡；v3 走研究报告字段、Markdown/PDF/Notion bundle 导出。L3 prompt 已将壁垒 `moat` 和生态位 `ecosystem_niche` 拆为独立字段
 - 研究主流程不依赖 n8n；不要新增 n8n 工作流作为主路径
@@ -135,7 +135,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 定稿台左侧结构：卡片设置、文字定稿、图片定稿、进入排版。前三个面板点击后占据右侧主区域，互斥切换；「进入排版」是左侧底部固定按钮。旧版内容定稿/钩子文案/数据库字段面板已删除
 - 研究台公司库定稿进度优先读取 `final_fields` 的 confirmed/total 字段数；旧 `final_content` 卡片数仅作兼容回退
 - 研究台要展示 Tavily/GitHub/YouTube/官网抓取的链路状态与数量；公司库点击一条只展开该公司研究信息，点另一条时其他行折叠
-- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集
+- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集；`COLLECTION_ENABLE_GAP_REFETCH=1`（默认）控制 Tavily pre-gap/L3 补采；`COLLECTION_WEBSITE_SUFFICIENT_CHARS=3000`（默认）官网字符数低于此值触发补采；`COLLECTION_MIN_UNIQUE_URLS=10`（默认）Tavily 唯一 URL 低于此值触发补采；`COLLECTION_MIN_INTENTS=2`（默认）Tavily 意图数低于此值触发补采
 - Evidence API（Goal 二新增）：`/api/evidence/company/<company>`、`/api/evidence/field/<company>/<field_key>`、`/api/evidence/candidate/<candidate_id>`；旧 `/api/evidence/<company_key>/<field_key>` 仍可用
 - RenderContract 主出口（Goal 一）：`GET /api/render-data/<company>?set=v3` 返回 `contracts/render_contract.schema.json` 格式的 8 卡结构，由 `webapp/services/render_assembler.py` 组装、`webapp/services/contract_validator.py` 校验
 - `LEGACY_CONTEXT_MODE=1` 显式开关绕过 chunk→rank→pack 治理（仅调试用，默认 0）
@@ -143,7 +143,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 ## 技术约束（补充）
 
 ### 开放网页搜索（Scrapling）
-- Scrapling 搜索使用 curl-cffi（`scrapling.fetchers.Fetcher`）直接抓取 SERP，不再先 `requests.get` 后 fallback；`webapp/research/scrapling/page_fetcher.py` 中 `fetch_html` 的 auto 模式只使用基础 Fetcher，不串行尝试 DynamicFetcher/StealthyFetcher（headless 太慢）
+- Scrapling 搜索使用 curl-cffi（`scrapling.fetchers.Fetcher`）直接抓取 SERP，不再先 `requests.get` 后 fallback；`webapp/research/scrapling/page_fetcher.py` 中 `fetch_html` 的 auto 模式只使用基础 Fetcher，不串行尝试 DynamicFetcher/StealthyFetcher（headless 太慢）。Fetcher 自动从环境变量注入 `HTTPS_PROXY`/`HTTP_PROXY` 代理
 - 官网抓取遇到 403 回退 Scrapling 时走级联策略：先 `fetcher`（curl-cffi，快），失败再 `stealthy`（Playwright + Cloudflare 求解，60s 超时）。不要直接上 StealthyFetcher
 - 默认搜索引擎仅 Bing（Google 在国内不可达）；可通过 `SCRAPLING_SEARCH_PROVIDERS` 覆盖
 - **红线**：`youtube_transcript_adapter.py` 的 `_webapp_dir` 必须是 3 层 `dirname`（`webapp/`），不是 2 层（`webapp/research/`）。2 层会导致本地 `research/scrapling/` 遮蔽 site-packages `scrapling`，Scrapling 全部超时失败

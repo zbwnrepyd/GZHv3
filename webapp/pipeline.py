@@ -396,13 +396,18 @@ def _apply_research_options_to_source_plan(source_plan, card_fields: list[str],
             priority="high",
             prepend=True,
         )
+    _HIGH_LATENCY_ADAPTERS = {"github", "youtube", "producthunt", "openbb", "companieshouse", "sec"}
     for family, fields in _SUPPLEMENTAL_ADAPTER_FIELDS.items():
         if options.get(family, True):
+            budget = {"max_queries": 3, "max_documents": 3, "timeout_seconds": 20}
+            if family in _HIGH_LATENCY_ADAPTERS:
+                budget["hard_timeout_seconds"] = 300
+                budget["timeout_seconds"] = 30
             _upsert_adapter_plan(
                 source_plan,
                 family,
                 [field for field in fields if field in card_fields] or public_fields[:8],
-                {"max_queries": 3, "max_documents": 3, "timeout_seconds": 20},
+                budget,
                 priority="medium",
                 prepend=False,
             )

@@ -9,29 +9,36 @@
 ## 目录约定
 
 ```
-prompts/        — LLM Prompt文件（layer0-3 + layer3-group-a/b/c 三组枚举提取）
+prompts/        — LLM Prompt文件（layer0-3 + layer3-group-a/b/c 三组枚举提取 + layer3-group-facts/market/operating L3拆组）
+market_intelligence/ — 市场情报模块（CLI）：采集→提取→估算→解析市场/财务字段
 webapp/         — Flask编辑后台 + 研究流水线（app.py入口）
-  research/       — 证据层：document_store, evidence_extractor, field_resolver, field_status
-    context/      — 噪音与上下文治理（旧模块）：document_cleaner, document_chunker, evidence_ranker, context_packer, token_budget
+  research/       — 证据层 + 结构化提取 + 深度优化模块：
+                     l0_gate（L0质量门控）、competitive_matrix（L1竞品矩阵）、
+                     business_canvas（L2商业模式画布/7 Powers壁垒）、
+                     market_data_bridge（市场数据桥接）、time_series（时间序列快照）、
+                     industry_benchmarks（行业基准SaaS/B2B/Consumer）、
+                     evidence_extractor、field_resolver、field_status、field_validator
+    context/      — 噪音与上下文治理：cleaner、chunker、ranker、packer、token_budget
+    adapters/     — 11个SourceAdapter（含scrapling_search、Playwright fallback）
   research_agents/ — 多Agent系统：11 Agent + forum/ + resolvers/ + storage/ + orchestrator
-  repositories/  — 数据访问：field_repo, entity_repo（10张规范化实体表CRUD）
-  routes/        — API路由：field, card_config, render, media, evidence
-  services/      — 重构新增服务：contract_validator, render_assembler, candidate_resolver, evidence_service, context_packer, document_chunker, context_ranker, budget_manager
-  db/            — 迁移脚本：migrate.py, evidence_migrations.py + migrate_entities.py（宽表→实体表）
+  repositories/  — 数据访问：field_repo、entity_repo（10张规范化实体表CRUD）
+  routes/        — API路由：field、card_config、render、media、evidence
+  services/      — 服务层：contract_validator、render_assembler、field_service 等
+  db/            — 迁移脚本：migrate.py（幂等，含迁移047 market_estimates、049 company_snapshots）
 image-studio/   — 图片定稿台（三栏），通过 iframe 嵌入定稿台
 canvas/         — HTML/CSS卡片制作台、单卡页面、Puppeteer截图脚本
-db/             — SQLite建表SQL和数据库文件
-contracts/      — RenderContract schema + asset_keys.json + card_sets/v3.json
+db/             — SQLite建表SQL和数据库文件 + migrations/
+contracts/      — RenderContract schema + asset_keys.json + card_sets/ + fields.json（含confidence_level定义）
 scripts/        — 覆盖检查 + 导出回归脚本
-tests/          — pytest 回归测试（636 passed）
+tests/          — pytest 回归测试（808 passed）
 ```
 
 ## 日常操作
 
 ### 启动服务
 ```bash
-pip install -r requirements.txt
-cd webapp && python3 app.py
+# 必须用 .venv Python 3.12（系统 Python 3.9 缺少 Scrapling 等依赖）
+cd webapp && .venv/bin/python3 app.py
 # Flask 已配置 TEMPLATES_AUTO_RELOAD=True，模板修改后无需重启
 # 访问研究台 http://127.0.0.1:5050/
 # 定稿台 http://127.0.0.1:5050/editor?company=<公司名>&set=v1|v2|v3
@@ -50,6 +57,16 @@ curl -X POST http://127.0.0.1:5050/api/research/start \
 ### 查询研究进度
 ```bash
 curl http://127.0.0.1:5050/api/research/status/<job_id>
+```
+
+### 市场情报（Market Intelligence）
+```bash
+# 完整研究
+python -m market_intelligence --company "Cursor" --domain cursor.com --category "AI coding assistant"
+# 跳过 Crunchbase（无 Key 时）
+python -m market_intelligence --company "Cursor" --domain cursor.com --no-crunchbase --verbose
+# 指定输出文件
+python -m market_intelligence --company "Cursor" --domain cursor.com -o result.json
 ```
 
 ### 验证
@@ -123,10 +140,47 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - RenderContract 主出口（Goal 一）：`GET /api/render-data/<company>?set=v3` 返回 `contracts/render_contract.schema.json` 格式的 8 卡结构，由 `webapp/services/render_assembler.py` 组装、`webapp/services/contract_validator.py` 校验
 - `LEGACY_CONTEXT_MODE=1` 显式开关绕过 chunk→rank→pack 治理（仅调试用，默认 0）
 
+## 技术约束（补充）
+
+### 开放网页搜索（Scrapling）
+- Scrapling 搜索使用 curl-cffi（`scrapling.fetchers.Fetcher`）直接抓取 SERP，不再先 `requests.get` 后 fallback；`webapp/research/scrapling/page_fetcher.py` 中 `fetch_html` 的 auto 模式只使用基础 Fetcher，不串行尝试 DynamicFetcher/StealthyFetcher（headless 太慢）
+- 官网抓取遇到 403 回退 Scrapling 时走级联策略：先 `fetcher`（curl-cffi，快），失败再 `stealthy`（Playwright + Cloudflare 求解，60s 超时）。不要直接上 StealthyFetcher
+- 默认搜索引擎仅 Bing（Google 在国内不可达）；可通过 `SCRAPLING_SEARCH_PROVIDERS` 覆盖
+- **红线**：`youtube_transcript_adapter.py` 的 `_webapp_dir` 必须是 3 层 `dirname`（`webapp/`），不是 2 层（`webapp/research/`）。2 层会导致本地 `research/scrapling/` 遮蔽 site-packages `scrapling`，Scrapling 全部超时失败
+- Scrapling 适配器 hard_timeout 设为 300s（默认 120s 不够）
+- 补充适配器（github/youtube/producthunt/openbb/companieshouse/sec）同样 hard_timeout=300s、timeout_seconds=30
+- Scrapling 需要 Python ≥ 3.10；用 `.venv/bin/python3`（3.12）启动 Flask，不要用系统 python3（3.9）。官网抓取 403 时除 Scrapling 级联外还增加直接 Playwright fallback（`_collect_with_playwright`）
+- 新增 ADAPTER_HARD_TIMEOUT_SECONDS 环境变量（默认 120），可在 .env 覆盖为 300
+
+### Market Intelligence 模块
+- 独立 CLI 模块：`python -m market_intelligence --company "Cursor" --domain cursor.com`
+- 数据流：Collect（Crunchbase/Tavily）→ Extract（LLM+Regex）→ Estimate（Bottom-up TAM）→ Resolve → JSON 输出
+- 不变量：LLM 不产生 `confirmed` 状态；找不到数据标 `unavailable`（是有效结论）；采集器不抛异常
+- 新表 `market_estimates`（迁移 047）
+- API Key：`CRUNCHBASE_API_KEY`（.env）
+- 主管道自动触发：`run_pipeline()` 中 MarketDataBridge 检测到 `market_estimates` 无数据时自动 `subprocess.run("python -m market_intelligence ...")`
+
+### 深度优化（2026-06-22 实施）
+- **confidence_level** 四级标注（独立于 status）：verified（官方/权威来源）| estimated（代理推算）| benchmark（行业基准）| unavailable（未公开）
+- **字段三级采集难度**：Tier 1 公开可采集（web_search+LLM）、Tier 2 代理指标推算（SimilarWeb/GitHub/PH 多源代理）、Tier 3 估算/行业基准（公式推算+基准兜底）。`classify_acquisition_tier()` 在 `field_status.py`
+- **L0 质量门控**（`l0_gate.py`）：校验 L0 输出完整性（≥3 key、>500 chars、有内容），不通过阻断下游
+- **L1 竞品矩阵**（`competitive_matrix.py`）：Pydantic 校验的结构化 JSON（threat_level、overlap_areas、evidence_snippets），非阻塞（失败回退文本）
+- **L2 商业模式画布**（`business_canvas.py`）：Pydantic 校验的 JSON，含 Helmer 7 Powers 8 种壁垒维度 + 6 种增长循环
+- **L3 拆组**：原 3582-token 单 prompt 拆为 A（基础事实 15）+ B（市场运营 18）+ C（商业竞争 12），A+B 并行→C 串行（依赖 A+B）
+- **MarketDataBridge**（`market_data_bridge.py`）：从 `market_estimates` 表读 TAM/融资数据注入 L3 context，避免重复推断
+- **TimeSeriesSnapshotter**（`time_series.py`）：新表 `company_snapshots`（迁移 049），每次研究存字段快照，支持 `diff()` 跨时间对比
+- **行业基准**（`industry_benchmarks.py`）：SaaS/B2B/Consumer 三套基准（留存率/LTV/CAC/毛利率），含 `estimate_ltv()` 公式，所有基准输出 `confidence_level="benchmark"` + 免责声明
+- **前端置信度标记**：定稿台字段旁显示 `✓ 已验证` / `≈ 估算` / `ⓘ 行业基准` / `— 未公开` 标签
+- **token 预算**：L3 拆分后 ~1142 tokens（-68%），详见 `docs/prompt-token-budget.md`
+
 ## 参考
 - 新人入口：`docs/project-guide.md`
+- 全量规格书：`SPEC.md`（1298 行，覆盖全部 21 章节）
 - 架构说明：`docs/architecture.md`
 - 重构 Spec：`docs/refactor/master_refactor_spec.md`（Goal 一~四 12 PR 全量重构方案）
 - 评分体系：`docs/scoring-system.md`
 - 卡片规范：`docs/card-spec.md`
 - 运行手册：`docs/runbook.md`
+- Token 预算：`docs/prompt-token-budget.md`
+- 深度优化设计：`docs/superpowers/specs/2026-06-22-depth-optimization-design.md`
+- 深度优化计划：`docs/superpowers/plans/2026-06-22-depth-optimization-plan.md`

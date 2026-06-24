@@ -519,6 +519,9 @@ class TestContextPackerNoiseExclusion(unittest.TestCase):
 
     def setUp(self):
         """创建临时 SQLite 数据库并插入测试数据"""
+        # 禁用翻译以避免测试数据被意外翻译
+        import research.context.context_packer as cp
+        cp._TRANSLATE_ENABLED = False
         self.tmpdir = tempfile.mkdtemp()
         self.db_path = os.path.join(self.tmpdir, "test_noise.db")
         conn = sqlite3.connect(self.db_path)

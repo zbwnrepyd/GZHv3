@@ -365,28 +365,53 @@ def update_field_status_batch(db_path: str, company_name: str, version: str,
             status = r.get("resolution_status", "")
             reason = r.get("unavailable_reason", "")
             method = r.get("resolution_method", "")
+            fv = r.get("field_value", "")
             ckey = r.get("company_key", "").strip() or company_name.lower()
             if not fk or not status:
                 continue
 
             # 更新 research_fields — 优先 company_key
+            # field_value 仅在 resolver 有值时覆盖暂缺占位
             if has_ckey:
-                conn.execute(
-                    """UPDATE research_fields
-                       SET resolution_status=?, unavailable_reason=?,
-                           resolution_method=?, updated_at=CURRENT_TIMESTAMP
-                       WHERE (company_key=? OR (company_key='' AND company_name=?))
-                       AND version=? AND field_key=?""",
-                    (status, reason, method, ckey, company_name, version, fk),
-                )
+                if fv:
+                    conn.execute(
+                        """UPDATE research_fields
+                           SET field_value=CASE WHEN field_value IN ('暂缺', '', NULL)
+                                THEN ? ELSE field_value END,
+                               resolution_status=?, unavailable_reason=?,
+                               resolution_method=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE (company_key=? OR (company_key='' AND company_name=?))
+                           AND version=? AND field_key=?""",
+                        (fv, status, reason, method, ckey, company_name, version, fk),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE research_fields
+                           SET resolution_status=?, unavailable_reason=?,
+                               resolution_method=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE (company_key=? OR (company_key='' AND company_name=?))
+                           AND version=? AND field_key=?""",
+                        (status, reason, method, ckey, company_name, version, fk),
+                    )
             else:
-                conn.execute(
-                    """UPDATE research_fields
-                       SET resolution_status=?, unavailable_reason=?,
-                           resolution_method=?, updated_at=CURRENT_TIMESTAMP
-                       WHERE company_name=? AND version=? AND field_key=?""",
-                    (status, reason, method, company_name, version, fk),
-                )
+                if fv:
+                    conn.execute(
+                        """UPDATE research_fields
+                           SET field_value=CASE WHEN field_value IN ('暂缺', '', NULL)
+                                THEN ? ELSE field_value END,
+                               resolution_status=?, unavailable_reason=?,
+                               resolution_method=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE company_name=? AND version=? AND field_key=?""",
+                        (fv, status, reason, method, company_name, version, fk),
+                    )
+                else:
+                    conn.execute(
+                        """UPDATE research_fields
+                           SET resolution_status=?, unavailable_reason=?,
+                               resolution_method=?, updated_at=CURRENT_TIMESTAMP
+                           WHERE company_name=? AND version=? AND field_key=?""",
+                        (status, reason, method, company_name, version, fk),
+                    )
             # 写 resolution_log
             conn.execute(
                 """INSERT INTO field_resolution_logs

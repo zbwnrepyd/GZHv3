@@ -309,7 +309,7 @@ def _resolve_private_metric_missing(field_key: str, entry: dict) -> FieldResult:
 
 def _resolve_derived(field_key: str, resolved_pool: dict,
                      entry: dict) -> FieldResult:
-    """公式字段：检查所有输入是否 confirmed/proxy/derived，是则标记 derived，否则 unavailable"""
+    """公式字段：检查所有输入是否 confirmed/proxy/derived，计算实际值。"""
     required = entry.get("required_inputs", [])
     formula = entry.get("formula", "")
 
@@ -333,13 +333,98 @@ def _resolve_derived(field_key: str, resolved_pool: dict,
                 unavailable_reason=f"依赖字段 {inp} 缺失，公式无法计算",
             )
 
+    # 计算实际值
+    computed = _compute_formula(formula, resolved_pool, field_key)
     return FieldResult(
         field_key=field_key,
+        value=computed,
         resolution_status="derived",
         resolution_method="formula",
         formula=formula,
         source_fields=required,
     )
+
+
+def _compute_formula(formula: str, resolved_pool: dict, field_key: str) -> str | None:
+    """执行公式并返回计算结果字符串。"""
+    import re as _re
+    formula = formula.strip()
+
+    # extract_rounds(field_key) → 从 funding_info 文本提取融资轮次 JSON
+    if formula.startswith("extract_rounds("):
+        input_key = formula[len("extract_rounds("):-1].strip()
+        input_result = resolved_pool.get(input_key)
+        if input_result and input_result.value:
+            return _do_extract_rounds(str(input_result.value))
+        return None
+
+    # FUNDING_MAP[field_key] → 查枚举映射
+    if formula.startswith("FUNDING_MAP["):
+        input_key = formula[len("FUNDING_MAP["):-1].strip()
+        input_result = resolved_pool.get(input_key)
+        if input_result and input_result.value:
+            try:
+                from competitive_scoring import FUNDING_MAP
+            except ImportError:
+                return None
+            mapped = FUNDING_MAP.get(str(input_result.value).strip())
+            return str(mapped) if mapped is not None else None
+        return None
+
+    # ltv / cac 等算术公式
+    if "/" in formula:
+        parts = formula.replace(" ", "").split("/")
+        if len(parts) == 2:
+            a_val = _extract_numeric(resolved_pool.get(parts[0]))
+            b_val = _extract_numeric(resolved_pool.get(parts[1]))
+            if a_val is not None and b_val is not None and b_val != 0:
+                ratio = round(a_val / b_val, 2)
+                # LTV/CAC 特殊处理：附带行业基准标注
+                if field_key == "ltv_cac_ratio":
+                    if ratio < 1:
+                        return f"{ratio}:1（低于 SaaS 健康基准 3:1）"
+                    elif ratio > 10:
+                        return f"{ratio}:1（远超 SaaS 基准 3:1-5:1，需核实）"
+                    return f"{ratio}:1（SaaS 行业健康基准 3:1-5:1）"
+                return str(ratio)
+
+    # arr / 12 → MRR
+    if formula == "arr / 12":
+        arr_val = _extract_numeric(resolved_pool.get("arr"))
+        if arr_val is not None:
+            return str(round(arr_val / 12, 2))
+        return None
+
+    return None
+
+
+def _extract_numeric(field_result) -> float | None:
+    """从 FieldResult 值提取数字（支持范围取均值）。"""
+    if not field_result or not field_result.value:
+        return None
+    import re as _re
+    text = str(field_result.value).replace(",", "")
+    numbers = _re.findall(r'[\d]+\.?\d*', text)
+    if numbers:
+        nums = [float(n) for n in numbers]
+        return sum(nums) / len(nums)
+    return None
+
+
+def _do_extract_rounds(funding_info_text: str) -> str | None:
+    """从 free-text funding_info 中提取融资轮次为 JSON 数组。"""
+    import re as _re, json as _json
+    rounds = []
+    patterns = [
+        (_re.compile(r'(?:Series\s+)?([A-E])\s*(?:round|轮)?\s*(?:\(|融资)?\s*\$?([\d,.]+)\s*([MBK]?)\)?', _re.IGNORECASE),
+         lambda m: {"round": f"Series {m.group(1).upper()}", "amount": f"${m.group(2)}{m.group(3) or 'M'}"}),
+        (_re.compile(r'(Seed|Pre-seed|种子轮|天使轮|Angel)\s*(?:round|融资)?\s*\$?([\d,.]+)\s*([MBK]?)?', _re.IGNORECASE),
+         lambda m: {"round": m.group(1), "amount": f"${m.group(2)}{m.group(3) or 'M'}"}),
+    ]
+    for pattern, builder in patterns:
+        for match in pattern.finditer(funding_info_text):
+            rounds.append(builder(match))
+    return _json.dumps(rounds[:5], ensure_ascii=False) if rounds else None
 
 
 def _resolve_market_model(field_key: str, entry: dict,

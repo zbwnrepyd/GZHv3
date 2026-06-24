@@ -47,6 +47,31 @@ def _identity_terms(company_identity: dict) -> tuple[str, str, str]:
     return display, official_host, root
 
 
+# 已知高价值域名（即使标题/摘要不包含公司名也给予基础分）
+_KNOWN_GOOD_DOMAINS = {
+    "crunchbase.com": 35,
+    "techcrunch.com": 25,
+    "linkedin.com": 20,
+    "wikipedia.org": 20,
+    "trustpilot.com": 15,
+    "g2.com": 20,
+    "capterra.com": 15,
+    "producthunt.com": 20,
+    "theresanaiforthat.com": 20,
+    "openbb.co": 15,
+    "owler.com": 15,
+    "pitchbook.com": 20,
+    "cbinsights.com": 20,
+    "glassdoor.com": 15,
+    "indeed.com": 10,
+    "similarweb.com": 15,
+    "semrush.com": 15,
+    "builtwith.com": 15,
+    "wappalyzer.com": 15,
+    "reddit.com": 5,
+    "news.ycombinator.com": 10,
+}
+
 def _result_relevance_score(result: SearchResult, company_identity: dict) -> int:
     display, official_host, root = _identity_terms(company_identity)
     parsed = urlparse(result.url or "")
@@ -67,6 +92,14 @@ def _result_relevance_score(result: SearchResult, company_identity: dict) -> int
         score += 20
     if root and root in host:
         score += 15
+
+    # 已知高价值域名：即使不包含公司名也给予基础分
+    # 避免 TechCrunch/Crunchbase/LinkedIn 等权威来源被 score>0 过滤掉
+    for good_domain, bonus in _KNOWN_GOOD_DOMAINS.items():
+        if host == good_domain or host.endswith("." + good_domain):
+            score += bonus
+            break
+
     return score
 
 
@@ -275,31 +308,35 @@ class ScraplingSearchAdapter(SourceAdapter):
         queries = queries[:cfg.max_queries_per_company]
         self.last_summary["query_count"] = len(queries) * max(1, len(cfg.providers))
 
+        # 每查询 1 页（Bing 每页 10 条）。如需更多，调大 max_queries_per_company
+        SERP_PAGES = 1
         search_results: list[SearchResult] = []
         serp_ok_count = 0
         serp_failed_count = 0
         serp_tasks = [
-            (provider, field_query.query)
+            (provider, field_query.query, page)
             for field_query in queries
             for provider in cfg.providers
+            for page in range(1, SERP_PAGES + 1)
         ]
         with ThreadPoolExecutor(
             max_workers=_bounded_workers(cfg.max_concurrency, len(serp_tasks))
         ) as executor:
             futures = {}
-            for provider, query in serp_tasks:
+            for provider, query, page in serp_tasks:
                 futures[executor.submit(
                     fetch_serp,
                     provider,
                     query,
                     fetcher=cfg.fetcher,
                     timeout_seconds=cfg.timeout_seconds,
-                )] = (provider, query)
+                    page=page,
+                )] = (provider, query, page)
                 if cfg.search_delay_seconds > 0:
                     time.sleep(cfg.search_delay_seconds)
 
             for future in as_completed(futures):
-                provider, query = futures[future]
+                provider, query, page = futures[future]
                 serp = future.result()
                 if serp.status == "unavailable":
                     raise RuntimeError(f"Scrapling unavailable: {serp.error or 'dependency not installed'}")

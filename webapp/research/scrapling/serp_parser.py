@@ -170,10 +170,49 @@ def parse_google_results(html: str, query: str = "") -> list[SearchResult]:
     return results or _fallback_link_results("google", html, query=query)
 
 
+def parse_duckduckgo_results(html: str, query: str = "") -> list[SearchResult]:
+    """解析 DuckDuckGo HTML 搜索结果。DDG 使用 /l/?uddg= 重定向包装 URL。"""
+    from urllib.parse import parse_qs, unquote
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    results: list[SearchResult] = []
+    for item in soup.select(".result__body"):
+        link = item.select_one(".result__a")
+        if not link:
+            continue
+        raw_url = link.get("href", "")
+        # DDG 重定向: //duckduckgo.com/l/?uddg=<encoded_url>
+        url = raw_url
+        if "/l/?uddg=" in raw_url or "uddg=" in raw_url:
+            parsed = urlparse(raw_url)
+            qs = parse_qs(parsed.query)
+            uddg = qs.get("uddg", [""])[0]
+            if uddg:
+                url = unquote(uddg).strip()
+        if not url or not url.startswith(("http://", "https://")):
+            continue
+        if not _is_organic_url(url):
+            continue
+        title = link.get_text(" ", strip=True)
+        snippet_tag = item.select_one(".result__snippet")
+        snippet = snippet_tag.get_text(" ", strip=True) if snippet_tag else ""
+        results.append(SearchResult(
+            provider="duckduckgo",
+            query=query,
+            rank=len(results) + 1,
+            title=title,
+            url=url,
+            snippet=snippet,
+        ))
+    return results
+
+
 def parse_serp(provider: str, html: str, query: str = "") -> list[SearchResult]:
     provider = (provider or "").strip().lower()
     if provider == "bing":
         return parse_bing_results(html, query=query)
     if provider == "google":
         return parse_google_results(html, query=query)
+    if provider in ("duckduckgo", "ddg"):
+        return parse_duckduckgo_results(html, query=query)
     return []

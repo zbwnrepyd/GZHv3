@@ -35,6 +35,22 @@ _CHUNK_OUTPUT_KEYS = {
     "source_url", "title", "token_estimate", "final_score",
 }
 
+# 英→中翻译开关（默认开启）
+import os as _os
+_TRANSLATE_ENABLED = _os.environ.get("TRANSLATE_CONTEXT_TO_CHINESE", "1") == "1"
+
+
+def _is_predominantly_english(text: str) -> bool:
+    """检测 text 是否以英文为主（需翻译）。CJK 字符占比高则跳过。"""
+    if not text:
+        return False
+    cjk = sum(1 for c in text if '一' <= c <= '鿿' or '぀' <= c <= 'ヿ')
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    total = cjk + latin
+    if total == 0:
+        return True
+    return (latin / total) > 0.6  # >60% 拉丁字母 → 判定为英文
+
 # ── 来源类型比例上限（占上下文 token 总数的比例）──
 _SOURCE_TYPE_CAP: dict[str, float] = {
     "community": 0.10,
@@ -314,6 +330,26 @@ def pack_context(
                     "RAW_TEXT_IN_LLM_ENABLED=0 but raw_text found in packed chunk. "
                     "This is a safety violation — raw_text must never enter LLM context."
                 )
+
+    # ── 英→中翻译（仅翻译已入选预算的 chunk，最小化 token 成本）──
+    if _TRANSLATE_ENABLED:
+        try:
+            translate_indices = []
+            texts_to_translate = []
+            for idx, ch in enumerate(packed_chunks):
+                text = ch.get("chunk_text", "")
+                if _is_predominantly_english(text):
+                    translate_indices.append(idx)
+                    texts_to_translate.append(text)
+
+            if texts_to_translate:
+                from deepseek_client import translate_to_chinese
+                translated = translate_to_chinese(texts_to_translate)
+                for list_idx, packed_idx in enumerate(translate_indices):
+                    if list_idx < len(translated):
+                        packed_chunks[packed_idx]["chunk_text"] = translated[list_idx]
+        except Exception as e:
+            print(f"[context_packer] translation failed (non-fatal): {e}")
 
     return {
         "company_key": company_key,

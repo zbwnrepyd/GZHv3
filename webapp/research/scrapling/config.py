@@ -37,11 +37,11 @@ def load_config() -> ScraplingCrawlerConfig:
     return ScraplingCrawlerConfig(
         enabled=_env_bool("SCRAPLING_ENABLED", "1"),
         fetcher=os.environ.get("SCRAPLING_FETCHER", "auto").strip().lower(),
-        providers=_env_list("SCRAPLING_SEARCH_PROVIDERS", "bing"),
-        search_delay_seconds=_env_int("SCRAPLING_SEARCH_DELAY_SECONDS", 1),
-        max_queries_per_company=_env_int("SCRAPLING_MAX_QUERIES_PER_COMPANY", 80),
+        providers=_env_list("SCRAPLING_SEARCH_PROVIDERS", "bing,duckduckgo"),
+        search_delay_seconds=_env_int("SCRAPLING_SEARCH_DELAY_SECONDS", 2),
+        max_queries_per_company=_env_int("SCRAPLING_MAX_QUERIES_PER_COMPANY", 15),
         results_per_query=_env_int("SCRAPLING_RESULTS_PER_QUERY", 10),
-        max_urls_per_company=_env_int("SCRAPLING_MAX_URLS_PER_COMPANY", 150),
+        max_urls_per_company=_env_int("SCRAPLING_MAX_URLS_PER_COMPANY", 200),
         timeout_seconds=_env_int("SCRAPLING_TIMEOUT_SECONDS", 10),
         max_concurrency=max(1, _env_int("SCRAPLING_MAX_CONCURRENCY", 8)),
     )

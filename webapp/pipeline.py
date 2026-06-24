@@ -1,7 +1,7 @@
 """研究流水线：4路并行采集 → 4层LLM分析 → 写库"""
 from __future__ import annotations
 import copy
-import json, os, re, sys, time
+import json, os, re, sys, time, threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
 import subprocess
@@ -72,6 +72,7 @@ _SOURCE_LABELS = {
 _TAVILY_RESULT_FIELDS = ("title", "url", "content", "score", "raw_content")
 _TAVILY_RAW_CONTENT_LIMIT = 2400
 _TAVILY_QUERY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_tavily_quota_exhausted = threading.Event()  # 全局标记，避免额度耗尽时反复尝试所有 Key
 _VALID_TAVILY_SEARCH_DEPTHS = {"ultra-fast", "fast", "basic", "advanced"}
 _ADAPTER_MODULE_BY_FAMILY = {
     "official_site": "official_site_adapter",
@@ -584,6 +585,11 @@ def _search_tavily(queries, progress_callback=None, job_id: str = None) -> list:
     batches = []
     total = len(queries)
     for q in queries:
+        # 额度耗尽时跳过剩余查询
+        if _tavily_quota_exhausted.is_set():
+            batches.append({"error": "Tavily quota exhausted", "_query": _query_attr(q, "query", str(q)),
+                           "_intent": _query_attr(q, "intent", ""), "results": []})
+            continue
         query_str = _query_attr(q, "query", str(q))
         intent = _query_attr(q, "intent", "")
         search_depth = _query_attr(q, "search_depth")
@@ -667,7 +673,12 @@ def _search_tavily_query(query: str, include_images: bool = False,
         if cached and time.time() - cached[0] < cache_ttl:
             return copy.deepcopy(cached[1])
 
+    # 全局标记：Tavily 额度已耗尽则跳过所有后续调用
+    if _tavily_quota_exhausted.is_set():
+        return {"error": "Tavily quota exhausted for this session", "results": []}
+
     last_error = ""
+    quota_count = 0  # 计数本次调用中遇到的额度错误数
     for index, api_key in enumerate(keys):
         try:
             body = {
@@ -689,7 +700,15 @@ def _search_tavily_query(query: str, include_images: bool = False,
             )
             if resp.status_code >= 400:
                 last_error = _tavily_error_text(resp)
-                if _is_tavily_quota_response(resp) and index < len(keys) - 1:
+                if _is_tavily_quota_response(resp):
+                    quota_count += 1
+                    # 所有 Key 均额度耗尽 → 设置全局标记，跳过后续 Tavily 调用
+                    if quota_count >= len(keys):
+                        _tavily_quota_exhausted.set()
+                    if index < len(keys) - 1:
+                        continue
+                    return {"error": last_error, "results": []}
+                if index < len(keys) - 1:
                     continue
                 return {"error": last_error, "results": []}
             data = resp.json()
@@ -867,6 +886,20 @@ def _evaluate_research_completeness(
     scrapling = src.get("scrapling_search") or {}
     tavily = src.get("tavily") or src.get("tavily_search") or {}
     secondary_names = ("github", "youtube", "whatweb", "producthunt", "openbb", "sec", "companieshouse")
+
+    # CF 反爬检测：官网全站被 block（status=empty 且 count=0），
+    # 且其他源充足时（Scrapling >= 10 或 Tavily >= 20），自动降阈值到 75%
+    official_blocked = (
+        official.get("status") == "empty"
+        and int(official.get("count", 0) or 0) == 0
+    )
+    if official_blocked:
+        alt_sufficient = (
+            int(scrapling.get("count", 0) or 0) >= 10
+            or int(tavily.get("count", 0) or 0) >= 20
+        )
+        if alt_sufficient:
+            threshold = min(threshold, 0.75)
 
     official_score = _ratio(int(official.get("count", 0) or 0), 3) if _source_ok(official) else 0.0
     scrapling_score = 0.0
@@ -2247,6 +2280,58 @@ def _group_for_field(field: str) -> str:
     return "A"
 
 
+# ── competitive_position 中文描述生成 ──────────────────────────────────────────
+
+_POSITION_ENUM_TO_CN = {
+    "leader": "市场领导者",
+    "strong_contender": "强力竞争者",
+    "niche_player": "细分市场参与者",
+    "early_stage": "早期探索者",
+}
+
+
+def _build_competitive_position_text(cm, l3_data: dict | None = None) -> str:
+    """将 L1 CompetitiveMatrix 的英文 enum 转为 ≤200 字中文描述。
+
+    优先使用 L3-C 提取的 competitive_position；若 LLM 未产出则基于 L1 数据生成兜底。
+    """
+    # L3-C 已产出 → 直接使用
+    if l3_data and isinstance(l3_data.get("competitive_position"), str) and \
+       len(l3_data["competitive_position"].strip()) >= 10:
+        return l3_data["competitive_position"].strip()
+
+    # 基于 L1 矩阵生成兜底
+    if cm is None:
+        return ""
+
+    position_cn = _POSITION_ENUM_TO_CN.get(cm.target_company_position, cm.target_company_position)
+    landscape = getattr(cm, "competitive_landscape_summary", "") or ""
+    parts = [f"在{landscape}中，被研公司处于「{position_cn}」地位。"]
+
+    # 竞品上下文
+    competitors = getattr(cm, "competitors", []) or []
+    top_threats = sorted(competitors, key=lambda c:
+        {"high": 3, "medium": 2, "low": 1}.get(getattr(c, "threat_level", "low"), 0),
+        reverse=True)[:3]
+    if top_threats:
+        names = "、".join(getattr(c, "name", "") for c in top_threats if getattr(c, "name", ""))
+        if names:
+            parts.append(f"主要竞争对手{names}。")
+
+    # 差异化机会（从竞品弱点提取）
+    weaknesses = []
+    for c in competitors[:3]:
+        w = getattr(c, "weaknesses", []) or []
+        weaknesses.extend(w[:2])
+    if weaknesses:
+        unique_w = list(dict.fromkeys(weaknesses))[:3]
+        parts.append(f"相较竞品，在{'、'.join(unique_w)}等方面存在差异化机会。")
+
+    result = "".join(parts)
+    return result[:280]  # 安全截断，保证 ≤200 中文字
+
+
+
 def llm_analysis(company_name: str, company_url: str, raw_data: dict,
                  progress_callback=None, job_id: str = None,
                  cancel_token=None) -> list[dict]:
@@ -2432,6 +2517,10 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
                 merged.update(l3a_parsed)
                 merged.update(l3b_parsed)
                 merged.update(l3c_parsed)
+                # L3-C 未产出 competitive_position 时，用 L1 矩阵生成中文兜底
+                if not merged.get("competitive_position"):
+                    merged["competitive_position"] = \
+                        _build_competitive_position_text(competitive_matrix, l3c_parsed)
                 parsed = merged
                 break
             except ValueError as e:
@@ -2950,6 +3039,7 @@ def run_pipeline(company_name: str, company_url: str,
                  research_options: dict | None = None) -> list[int]:
     """执行完整研究流水线，返回插入的记录 ID 列表"""
     t0 = time.time()
+    _tavily_quota_exhausted.clear()  # 每次新研究重置额度标记（额度可能已恢复）
 
     def _check_cancel():
         if callable(cancel_token) and cancel_token():
@@ -3261,8 +3351,11 @@ def run_pipeline(company_name: str, company_url: str,
             cm_json = _json.dumps(competitive_matrix.model_dump(),
                                   ensure_ascii=False)
             all_extracted_fields["competitors_structured"] = cm_json
-            all_extracted_fields["competitive_position"] = \
-                competitive_matrix.target_company_position
+            # competitive_position 已在 L3 merge 时设为中文描述
+            # 若仍为空则用枚举 map 兜底
+            if not all_extracted_fields.get("competitive_position"):
+                all_extracted_fields["competitive_position"] = \
+                    _build_competitive_position_text(competitive_matrix)
             # Persist to research_fields for render contract consumption
             _field_rows = [{
                 "company_name": company_name, "company_key": company_key,
@@ -3272,7 +3365,7 @@ def run_pipeline(company_name: str, company_url: str,
             }, {
                 "company_name": company_name, "company_key": company_key,
                 "version": "standard", "field_key": "competitive_position",
-                "field_value": competitive_matrix.target_company_position,
+                "field_value": all_extracted_fields["competitive_position"],
                 "value_type": "text", "resolution_status": "llm_extracted",
             }]
             insert_research_fields_batch(config.DB_PATH_RESEARCH, _field_rows)

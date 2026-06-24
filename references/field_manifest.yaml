@@ -359,6 +359,14 @@ fields:
     context_budget_tokens: 800
     max_evidence_chunks: 2
     sub_budget: competition_context
+  differentiated_opportunity:
+    category: A
+    resolution_type: official_fact
+    if_missing: unavailable
+    context_budget_tokens: 800
+    max_evidence_chunks: 2
+    sub_budget: competition_context
+    note: "v3 专用字段，基于竞品弱点 + L2 增长循环"
   moat:
     category: A
     resolution_type: official_fact
@@ -746,14 +754,20 @@ fields:
     category: B
     resolution_type: derived
     if_missing: derived
+    formula: "SCORE_DEFENSIBILITY(ai_model_dependency, workflow_integration_level, data_flywheel)"
+    required_inputs: [ai_model_dependency, workflow_integration_level, data_flywheel]
   score_incumbent_attention:
     category: B
     resolution_type: derived
     if_missing: derived
+    formula: "SCORE_INCUMBENT(incumbent_direct_competitor, stack_layer)"
+    required_inputs: [incumbent_direct_competitor, stack_layer]
   score_value_capture:
     category: B
     resolution_type: derived
     if_missing: derived
+    formula: "SCORE_VALUE_CAPTURE(pricing_model, customer_segment_type, funding_stage)"
+    required_inputs: [pricing_model, customer_segment_type, funding_stage]
 
   # ── L2 商业模式画布（结构化 JSON）──
   business_canvas:

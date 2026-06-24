@@ -169,7 +169,7 @@ def test_scrapling_config_defaults_to_auto(monkeypatch):
 
     assert cfg.fetcher == "auto"
     assert cfg.enabled is True  # 默认启用
-    assert cfg.search_delay_seconds == 1  # 默认 1 秒延迟避免搜索引擎限流
+    assert cfg.search_delay_seconds == 2  # 默认 2 秒延迟，多引擎抗并发避免搜索引擎限流
 
 
 def test_fetch_html_auto_uses_basic_fetcher_only(monkeypatch):
@@ -309,7 +309,7 @@ def test_adapter_fetches_page_with_local_requests_before_scrapling(monkeypatch):
     monkeypatch.setattr(
         adapter_module,
         "fetch_serp",
-        lambda provider, query, fetcher, timeout_seconds: FetchResult(
+        lambda provider, query, fetcher, timeout_seconds, page=1: FetchResult(
             url="https://www.bing.com/search?q=Anthropic+funding",
             html="<html>search</html>",
         ),
@@ -389,7 +389,7 @@ def test_adapter_filters_unrelated_serp_urls_before_fetching(monkeypatch):
     monkeypatch.setattr(
         adapter_module,
         "fetch_serp",
-        lambda provider, query, fetcher, timeout_seconds: FetchResult(
+        lambda provider, query, fetcher, timeout_seconds, page=1: FetchResult(
             url="https://www.bing.com/search?q=Ideogram+competitors",
             html="<html>search</html>",
         ),
@@ -471,8 +471,8 @@ def test_adapter_fetches_serps_without_serial_sleep(monkeypatch):
         ],
     )
 
-    def fake_fetch_serp(provider, query, fetcher, timeout_seconds):
-        fetches.append((provider, query))
+    def fake_fetch_serp(provider, query, fetcher, timeout_seconds, page=1):
+        fetches.append((provider, query, page))
         return FetchResult(url=f"https://{provider}.example", html="<html></html>")
 
     monkeypatch.setattr(adapter_module, "fetch_serp", fake_fetch_serp)
@@ -486,5 +486,5 @@ def test_adapter_fetches_serps_without_serial_sleep(monkeypatch):
     )
 
     assert docs == []
-    assert len(fetches) == 4
+    assert len(fetches) == 4  # 2 queries × 2 providers × 1 page
     assert sleeps == []

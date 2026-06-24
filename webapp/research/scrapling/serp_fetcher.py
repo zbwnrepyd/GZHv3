@@ -11,11 +11,20 @@ USER_AGENT = (
 )
 
 
-def build_search_url(provider: str, query: str) -> str:
+def build_search_url(provider: str, query: str, page: int = 1) -> str:
+    """构建搜索引擎 URL。page 从 1 开始，每页约 10 条结果。"""
     encoded = quote_plus(query)
     if provider == "google":
-        return f"https://www.google.com/search?q={encoded}&num=10"
-    return f"https://www.bing.com/search?q={encoded}"
+        start = (page - 1) * 10
+        return f"https://www.google.com/search?q={encoded}&num=30&hl=en&start={start}"
+    if provider in ("duckduckgo", "ddg"):
+        # DDG HTML 版，不需要 JS，对爬虫友好
+        # s=偏移量，每页约 20-30 条
+        offset = (page - 1) * 20
+        return f"https://html.duckduckgo.com/html/?q={encoded}&s={offset}"
+    # Bing: setmkt=en-US 强制英文市场结果（解决代理 IP 在中国被重定向到 cn.bing.com 的问题）
+    first = (page - 1) * 10 + 1
+    return f"https://www.bing.com/search?q={encoded}&setmkt=en-US&count=30&first={first}"
 
 
 def _fetch_serp_with_scrapling(url: str, timeout_seconds: int) -> FetchResult:
@@ -54,13 +63,45 @@ def _fetch_serp_with_scrapling(url: str, timeout_seconds: int) -> FetchResult:
     return FetchResult(url=url, html=html)
 
 
-def fetch_serp(provider: str, query: str, *, fetcher: str, timeout_seconds: int) -> FetchResult:
+def _fetch_serp_with_requests(url: str, timeout_seconds: int) -> FetchResult:
+    """对 Google 等封 curl-cffi 的引擎使用 requests + 代理。"""
+    import requests as req
+    import os
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html", "Accept-Language": "en-US,en;q=0.9"}
+    proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    try:
+        resp = req.get(url, headers=headers, timeout=timeout_seconds, proxies=proxies)
+        if resp.status_code >= 400:
+            return FetchResult(url=url, html="", status="failed",
+                             error=f"HTTP {resp.status_code}")
+        html = resp.text or ""
+        # Google 专用封锁检测：只看 captcha/unusual traffic，不看 enablejs（noscript 中正常出现）
+        body = (html or "")[:4000].lower()
+        google_blocked = any(m in body for m in ("unusual traffic", "sorry/index", "captcha"))
+        if google_blocked:
+            return FetchResult(url=url, html="", status="failed",
+                             error="Google blocked the request (captcha/unusual traffic)")
+        return FetchResult(url=url, html=html)
+    except Exception as e:
+        return FetchResult(url=url, html="", status="failed", error=str(e)[:200])
+
+
+def fetch_serp(provider: str, query: str, *, fetcher: str, timeout_seconds: int, page: int = 1) -> FetchResult:
     """Fetch search engine result page HTML.
 
-    Uses Scrapling Fetcher (curl-cffi) directly — no plain-requests first-try
-    because search engines universally block requests' TLS fingerprint.
+    Google: 使用 requests + 代理（curl-cffi 被 Google 封锁）
+    其他引擎: 使用 Scrapling Fetcher（curl-cffi，模拟 Chrome TLS）
+
+    Args:
+        page: 搜索结果页码（1 起），自动计算分页 offset
     """
-    url = build_search_url(provider, query)
+    url = build_search_url(provider, query, page=page)
+
+    # Google 封 curl-cffi，用 requests 直接请求
+    if provider == "google":
+        return _fetch_serp_with_requests(url, timeout_seconds)
+
     result = _fetch_serp_with_scrapling(url, timeout_seconds)
     if result.status == "ok" and result.html:
         return result

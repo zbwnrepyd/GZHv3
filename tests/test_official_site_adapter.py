@@ -28,6 +28,12 @@ def test_official_site_adapter_reports_antibot_block(monkeypatch):
     import research.adapters.official_site_adapter as official_site_adapter
 
     monkeypatch.setattr(official_site_adapter.requests, "Session", FakeSession)
+    # 强制回退到 requests 路径（Scrapling Fetcher 不可用）
+    monkeypatch.setattr(official_site_adapter, "fetch_html",
+        lambda url, fetcher, timeout_seconds: (_ for _ in ()).throw(ImportError("Mock: Scrapling unavailable")))
+    # 新代码不再用 Session.get，改用 requests.get
+    monkeypatch.setattr(official_site_adapter.requests, "get",
+        lambda url, headers, timeout, allow_redirects: FakeResponse())
     # Mock batch browser fallback to return empty (avoid real browser launch)
     monkeypatch.setattr(
         OfficialSiteAdapter, "_collect_blocked_urls_with_browser",
@@ -35,12 +41,13 @@ def test_official_site_adapter_reports_antibot_block(monkeypatch):
     )
 
     adapter = OfficialSiteAdapter()
-    with pytest.raises(RuntimeError, match="anti-bot protection"):
-        adapter.collect(
-            {"display_name": "Ideogram", "website_host": "ideogram.ai"},
-            ["company_name"],
-            {"max_documents": 2, "timeout_seconds": 1},
-        )
+    docs = adapter.collect(
+        {"display_name": "Ideogram", "website_host": "ideogram.ai"},
+        ["company_name"],
+        {"max_documents": 2, "timeout_seconds": 1},
+    )
+    # CF 站点返回空列表，不抛异常（优雅降级）
+    assert docs == []
 
 
 def test_official_site_adapter_uses_scrapling_fallback_for_antibot(monkeypatch):
@@ -48,6 +55,12 @@ def test_official_site_adapter_uses_scrapling_fallback_for_antibot(monkeypatch):
     import research.adapters.official_site_adapter as official_site_adapter
     from research.scrapling.page_fetcher import FetchResult
 
+    # 强制回退到 requests 路径
+    monkeypatch.setattr(official_site_adapter, "fetch_html",
+        lambda url, fetcher, timeout_seconds: (_ for _ in ()).throw(ImportError("Mock: Scrapling unavailable")))
+    # Mock requests.get（新代码不再用 Session）
+    monkeypatch.setattr(official_site_adapter.requests, "get",
+        lambda url, headers, timeout, allow_redirects: FakeResponse())
     monkeypatch.setattr(official_site_adapter.requests, "Session", FakeSession)
 
     # Mock batch browser fallback to return a valid document (simulating Scrapling success)

@@ -251,48 +251,93 @@ class OfficialSiteAdapter(SourceAdapter):
         blocked_urls: list[SourceDocument] = []  # (url, path) 待浏览器回退
         http_statuses: list[int] = []
         cf_detected: bool = False
+        consecutive_cf_blocks = 0  # 连续 CF 拦截计数，>=3 时跳过剩余 requests 路径
+        MAX_BLOCKED_FALLBACK = 5  # 批量浏览器回退最多处理 5 个 URL
 
-        session = requests.Session()
-        session.headers.update({"User-Agent": USER_AGENT})
+        # 优先使用 Scrapling Fetcher（curl-cffi 模拟 Chrome TLS 指纹，绕过基础 CF 检测）
+        _use_scrapling = True
+        try:
+            fetch_html("about:blank", fetcher="auto", timeout_seconds=1)
+        except (ImportError, ModuleNotFoundError):
+            _use_scrapling = False
+            logger.info("Scrapling Fetcher unavailable, falling back to requests")
 
         for path in paths:
+            # 快速路径：连续 CF 拦截 >= 3，判定全站反爬，停止尝试
+            if consecutive_cf_blocks >= 3:
+                url = urljoin(base_url, path)
+                blocked_urls.append((url, path, 403))
+                logger.debug("OfficialSiteAdapter: skipping %s (site-wide CF detected)", path)
+                continue
+
             url = urljoin(base_url, path)
 
             try:
-                resp = session.get(url, timeout=timeout, allow_redirects=True)
+                if _use_scrapling:
+                    # curl-cffi Fetcher（模拟 Chrome TLS）— 比 plain requests 更能穿透 CF
+                    result = fetch_html(url, fetcher="auto", timeout_seconds=timeout)
+                    if result.status == "unavailable":
+                        _use_scrapling = False
+                        resp = requests.get(url, headers={"User-Agent": USER_AGENT},
+                                          timeout=timeout, allow_redirects=True)
+                        html_text = resp.text
+                        http_status = resp.status_code
+                    elif result.status != "ok":
+                        http_statuses.append(403)
+                        body = (result.error or "")[:2000].lower()
+                        cf_markers_found = any(m in body for m in ANTIBOT_MARKERS)
+                        if cf_markers_found:
+                            cf_detected = True
+                            consecutive_cf_blocks += 1
+                        else:
+                            consecutive_cf_blocks = 0
+                        if result.status == "failed":
+                            blocked_urls.append((url, path, 403))
+                            logger.warning("Blocked %s (scrapling %s), queued for browser fallback", url, result.status)
+                        continue
+                    else:
+                        html_text = result.html or ""
+                        http_status = 200
+                else:
+                    resp = requests.get(url, headers={"User-Agent": USER_AGENT},
+                                      timeout=timeout, allow_redirects=True)
+                    html_text = resp.text or ""
+                    http_status = resp.status_code
 
-                if resp.status_code != 200:
-                    http_statuses.append(resp.status_code)
-                    body = (resp.text or "")[:2000].lower()
+                if http_status != 200:
+                    http_statuses.append(http_status)
+                    body = (html_text or "")[:2000].lower()
                     cf_markers_found = any(m in body for m in ANTIBOT_MARKERS)
                     if cf_markers_found:
                         cf_detected = True
+                        consecutive_cf_blocks += 1
+                    else:
+                        consecutive_cf_blocks = 0
                     is_blocked = (
-                        resp.status_code in (401, 403, 429, 503)
+                        http_status in (401, 403, 429, 503)
                         and cf_markers_found
                     )
-                    if not is_blocked and resp.status_code == 403:
+                    if not is_blocked and http_status == 403:
                         is_blocked = True
+                        consecutive_cf_blocks += 1
                     if is_blocked:
-                        blocked_urls.append((url, path, resp.status_code))
-                        logger.warning("Blocked %s (HTTP %s), queued for browser fallback", url, resp.status_code)
+                        blocked_urls.append((url, path, http_status))
+                        logger.warning("Blocked %s (HTTP %s), queued for browser fallback", url, http_status)
                     continue
 
-                content_type = resp.headers.get("Content-Type", "")
-                if "text/html" not in content_type and "text/plain" not in content_type:
+                consecutive_cf_blocks = 0  # 成功获取，重置计数器
+
+                if not html_text:
                     continue
 
-                html = resp.text
-                if not html:
-                    continue
-
-                if _looks_antibot_html(html):
+                if _looks_antibot_html(html_text):
                     cf_detected = True
-                    blocked_urls.append((url, path, resp.status_code))
+                    consecutive_cf_blocks += 1
+                    blocked_urls.append((url, path, http_status))
                     logger.warning("Blocked by anti-bot page %s, queued for browser fallback", url)
                     continue
 
-                text = _extract_content_text(html)
+                text = _extract_content_text(html_text)
                 if not text.strip():
                     continue
 
@@ -311,6 +356,10 @@ class OfficialSiteAdapter(SourceAdapter):
             except Exception:
                 logger.warning("OfficialSiteAdapter: %s error", url, exc_info=True)
 
+        # 限制批量回退 URL 数量：反爬站点只尝试关键页面
+        if blocked_urls:
+            blocked_urls = blocked_urls[:MAX_BLOCKED_FALLBACK]
+
         # 批量浏览器回退：所有被 CF 拦截的 URL 共用一个浏览器会话
         if blocked_urls:
             browser_docs = self._collect_blocked_urls_with_browser(
@@ -324,9 +373,11 @@ class OfficialSiteAdapter(SourceAdapter):
             documents.extend(browser_docs)
 
         if not documents and blocked_urls:
-            raise RuntimeError(
-                "Official site blocked by anti-bot protection "
-                f"({len(blocked_urls)}/{len(paths)} URLs, HTTP {http_statuses[0] if http_statuses else 403})"
+            logger.warning(
+                "Official site fully blocked by anti-bot protection "
+                "(%d/%d URLs, HTTP %s)",
+                len(blocked_urls), len(paths),
+                http_statuses[0] if http_statuses else 403,
             )
 
         logger.info(
@@ -487,30 +538,42 @@ class OfficialSiteAdapter(SourceAdapter):
 
         Cloudflare Turnstile 求解后 cookie 在同一浏览器会话内持久化，
         第一个 URL 求解 CF 后，后续 URL 直接通过。
+
+        CF 求解有 30s 硬超时（避免内部无限重试），失败后跳过后续求解。
         """
+        import concurrent.futures
+
         documents: list[SourceDocument] = []
         if not blocked_urls:
             return documents
 
-        # 方案 A：单个 StealthyFetcher 实例处理所有 URL（cookie 共享）
+        # 方案 A：StealthyFetcher（浏览器指纹绕过基础反爬，不做 CF 求解避免死循环）
+        # 策略：只取前 3 个关键路径（/, /about, /pricing），30s 硬超时
         try:
             from scrapling.fetchers import StealthyFetcher
             fetcher = StealthyFetcher()
-            logger.info("Batch StealthyFetcher: %d URLs with shared session", len(blocked_urls))
+            key_urls = blocked_urls[:3]  # 只尝试前 3 个关键 URL
+            logger.info("Batch StealthyFetcher: %d key URLs (solve_cloudflare=False)", len(key_urls))
 
-            for url, path, http_status in blocked_urls:
+            for url, path, http_status in key_urls:
                 try:
-                    page = fetcher.fetch(
-                        url, headless=True, network_idle=True,
-                        solve_cloudflare=True, timeout=60000,
-                    )
+                    def _fetch():
+                        return fetcher.fetch(
+                            url, headless=True, network_idle=True,
+                            solve_cloudflare=False, timeout=60000,
+                        )
+                    future = concurrent.futures.ThreadPoolExecutor(max_workers=1).submit(_fetch)
+                    page = future.result(timeout=30)
                     html = str(page.html_content) if hasattr(page, 'html_content') else str(page)
+                except concurrent.futures.TimeoutError:
+                    logger.warning("StealthyFetcher TIMEOUT (30s): %s", url)
+                    continue
                 except Exception as e:
                     logger.warning("StealthyFetcher error: %s %s", url, e)
                     continue
 
                 if _looks_antibot_html(html):
-                    logger.warning("StealthyFetcher STILL BLOCKED: %s", url)
+                    logger.warning("StealthyFetcher still blocked (no CF solve): %s", url)
                     continue
 
                 text = _extract_content_text(html)
@@ -533,14 +596,16 @@ class OfficialSiteAdapter(SourceAdapter):
         except ImportError:
             pass
 
-        # 方案 B：直接 Playwright（Scrapling 不可用时）
+        # 方案 B：直接 Playwright（Scrapling 不可用时/StealthyFetcher 未获取到文档）
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
             logger.warning("Playwright not available for batch fallback")
             return documents
 
-        logger.info("Batch Playwright: %d URLs with shared session", len(blocked_urls))
+        # 限制 3 个关键 URL，避免全量超时
+        pw_urls = blocked_urls[:3]
+        logger.info("Batch Playwright: %d key URLs with shared session", len(pw_urls))
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
@@ -559,21 +624,21 @@ class OfficialSiteAdapter(SourceAdapter):
                     window.chrome = {runtime: {}};
                 """)
 
-                for url, path, http_status in blocked_urls:
+                for url, path, http_status in pw_urls:
                     page = context.new_page()
                     try:
-                        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                        page.wait_for_timeout(3000)
+                        page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                        page.wait_for_timeout(2000)
                         title = page.title()
                         if "just a moment" in title.lower():
                             try:
                                 page.wait_for_function(
                                     "document.title.toLowerCase().indexOf('just a moment') === -1",
-                                    timeout=15000,
+                                    timeout=10000,
                                 )
-                                page.wait_for_timeout(2000)
+                                page.wait_for_timeout(1000)
                             except Exception:
-                                logger.warning("CF solve timeout: %s", url)
+                                logger.warning("CF wait timeout: %s", url)
                         html = page.content()
                         page.close()
 

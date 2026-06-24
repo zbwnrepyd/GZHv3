@@ -86,12 +86,12 @@ class Config:
     DEEPSEEK_FLASH_MODEL: str = "deepseek-v4-flash"
 
     # 研究深度与预算
-    RESEARCH_DEPTH: str = os.environ.get("RESEARCH_DEPTH", "standard")
-    TAVILY_QUERY_BUDGET_STANDARD: int = int(os.environ.get("TAVILY_QUERY_BUDGET_STANDARD", "14"))
-    TAVILY_QUERY_BUDGET_DEEP: int = int(os.environ.get("TAVILY_QUERY_BUDGET_DEEP", "18"))
+    RESEARCH_DEPTH: str = os.environ.get("RESEARCH_DEPTH", "deep")
+    TAVILY_QUERY_BUDGET_STANDARD: int = int(os.environ.get("TAVILY_QUERY_BUDGET_STANDARD", "20"))
+    TAVILY_QUERY_BUDGET_DEEP: int = int(os.environ.get("TAVILY_QUERY_BUDGET_DEEP", "30"))
     TAVILY_RESULTS_PER_QUERY: int = int(os.environ.get("TAVILY_RESULTS_PER_QUERY", "5"))
     TAVILY_ADAPTIVE_MODE: bool = os.environ.get("TAVILY_ADAPTIVE_MODE", "1") == "1"
-    TAVILY_INITIAL_QUERY_LIMIT: int = int(os.environ.get("TAVILY_INITIAL_QUERY_LIMIT", "8"))
+    TAVILY_INITIAL_QUERY_LIMIT: int = int(os.environ.get("TAVILY_INITIAL_QUERY_LIMIT", "10"))
     TAVILY_INITIAL_SEARCH_DEPTH: str = os.environ.get("TAVILY_INITIAL_SEARCH_DEPTH", "basic")
     TAVILY_INITIAL_INCLUDE_RAW_CONTENT: bool = os.environ.get("TAVILY_INITIAL_INCLUDE_RAW_CONTENT", "0") == "1"
     TAVILY_ESCALATE_SEARCH_DEPTH: str = os.environ.get("TAVILY_ESCALATE_SEARCH_DEPTH", "advanced")
@@ -101,14 +101,17 @@ class Config:
             "TAVILY_ESCALATE_RAW_CONTENT_INTENTS"
         ) or ["market_size", "pricing_details", "customers", "unit_economics"]
     )
-    TAVILY_SEARCH_DEPTH: str = os.environ.get("TAVILY_SEARCH_DEPTH", "advanced")
-    TAVILY_INCLUDE_RAW_CONTENT: bool = os.environ.get("TAVILY_INCLUDE_RAW_CONTENT", "1") == "1"
+    TAVILY_SEARCH_DEPTH: str = os.environ.get("TAVILY_SEARCH_DEPTH", "basic")
+    TAVILY_INCLUDE_RAW_CONTENT: bool = os.environ.get("TAVILY_INCLUDE_RAW_CONTENT", "0") == "1"
     TAVILY_CACHE_TTL_SECONDS: int = int(os.environ.get("TAVILY_CACHE_TTL_SECONDS", "86400"))
-    COLLECTION_MIN_UNIQUE_URLS: int = int(os.environ.get("COLLECTION_MIN_UNIQUE_URLS", "18"))
+    COLLECTION_MIN_UNIQUE_URLS: int = int(os.environ.get("COLLECTION_MIN_UNIQUE_URLS", "10"))
+    COLLECTION_MIN_INTENTS: int = int(os.environ.get("COLLECTION_MIN_INTENTS", "2"))
+    RESEARCH_COMPLETENESS_MIN: float = float(os.environ.get("RESEARCH_COMPLETENESS_MIN", "0.85"))
+    RESEARCH_COMPLETENESS_GATE: bool = os.environ.get("RESEARCH_COMPLETENESS_GATE", "1") == "1"
     COLLECTION_ENABLE_GAP_REFETCH: bool = os.environ.get("COLLECTION_ENABLE_GAP_REFETCH", "1") == "1"
     EVIDENCE_SPAN_BINDING_ENABLED: bool = os.environ.get("EVIDENCE_SPAN_BINDING_ENABLED", "1") == "1"
-    COLLECTION_WEBSITE_SUFFICIENT_CHARS: int = int(os.environ.get("COLLECTION_WEBSITE_SUFFICIENT_CHARS", "1500"))
-    COLLECTION_GAP_QUERY_LIMIT: int = int(os.environ.get("COLLECTION_GAP_QUERY_LIMIT", "4"))
+    COLLECTION_WEBSITE_SUFFICIENT_CHARS: int = int(os.environ.get("COLLECTION_WEBSITE_SUFFICIENT_CHARS", "3000"))
+    COLLECTION_GAP_QUERY_LIMIT: int = int(os.environ.get("COLLECTION_GAP_QUERY_LIMIT", "8"))
 
     # ── 噪音与上下文治理 ──
     L0_CONTEXT_BUDGET_TOKENS: int = int(os.environ.get("L0_CONTEXT_BUDGET_TOKENS", "18000"))
@@ -129,12 +132,12 @@ class Config:
     USE_FIELD_DRIVEN_COLLECTION: bool = os.environ.get("USE_FIELD_DRIVEN_COLLECTION", "1") == "1"
 
     # ── SourceAdapter 预算 ──
-    COLLECTION_BUDGET_OFFICIAL_SITE: int = int(os.environ.get("COLLECTION_BUDGET_OFFICIAL_SITE", "5"))
-    COLLECTION_BUDGET_TAVILY_SEARCH: int = int(os.environ.get("COLLECTION_BUDGET_TAVILY_SEARCH", "14"))
-    COLLECTION_BUDGET_TAVILY_EXTRACT: int = int(os.environ.get("COLLECTION_BUDGET_TAVILY_EXTRACT", "20"))
-    COLLECTION_BUDGET_GITHUB: int = int(os.environ.get("COLLECTION_BUDGET_GITHUB", "3"))
-    COLLECTION_BUDGET_PRODUCTHUNT: int = int(os.environ.get("COLLECTION_BUDGET_PRODUCTHUNT", "3"))
-    COLLECTION_BUDGET_YOUTUBE: int = int(os.environ.get("COLLECTION_BUDGET_YOUTUBE", "3"))
+    COLLECTION_BUDGET_OFFICIAL_SITE: int = int(os.environ.get("COLLECTION_BUDGET_OFFICIAL_SITE", "10"))
+    COLLECTION_BUDGET_TAVILY_SEARCH: int = int(os.environ.get("COLLECTION_BUDGET_TAVILY_SEARCH", "20"))
+    COLLECTION_BUDGET_TAVILY_EXTRACT: int = int(os.environ.get("COLLECTION_BUDGET_TAVILY_EXTRACT", "30"))
+    COLLECTION_BUDGET_GITHUB: int = int(os.environ.get("COLLECTION_BUDGET_GITHUB", "5"))
+    COLLECTION_BUDGET_PRODUCTHUNT: int = int(os.environ.get("COLLECTION_BUDGET_PRODUCTHUNT", "5"))
+    COLLECTION_BUDGET_YOUTUBE: int = int(os.environ.get("COLLECTION_BUDGET_YOUTUBE", "5"))
     COLLECTION_BUDGET_SEC: int = int(os.environ.get("COLLECTION_BUDGET_SEC", "5"))
     COLLECTION_BUDGET_BENCHMARK: int = int(os.environ.get("COLLECTION_BUDGET_BENCHMARK", "5"))
 

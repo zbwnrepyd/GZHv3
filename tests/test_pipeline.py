@@ -617,11 +617,14 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertEqual(calls, ["DemoCo market size"])
 
     def test_pre_gap_refetch_skips_when_website_content_is_sufficient(self):
+        # 新阈值：Tavily >= 20 URL + >= 5 意图 + Scrapling >= 10 + 官网 >= 3000 + GitHub/YouTube 有结果
         raw = {
             "_source_summary": {
-                "tavily": {"unique_url_count": 0, "intent_count": 0},
-                "website": {"count": 1800, "status": "ok"},
+                "tavily": {"unique_url_count": 25, "intent_count": 6},
+                "website": {"count": 5000, "status": "ok"},
                 "github": {"count": 1, "status": "ok"},
+                "scrapling_search": {"count": 15, "status": "ok"},
+                "youtube": {"count": 2, "status": "ok"},
             },
             "display_name": "DemoCo",
             "website_host": "demo.example",
@@ -660,8 +663,7 @@ class PipelineFailureTests(unittest.TestCase):
             pipeline._evaluate_l3_value_gaps(record)
 
     def test_gap_queries_are_limited_to_top_priority_intents(self):
-        # P0: COLLECTION_GAP_QUERY_LIMIT=4，补采最多 4 条 query
-        # D/E class fields filtered by build_gap_queries
+        # COLLECTION_GAP_QUERY_LIMIT=8，补采最多 8 条 query
         gaps = {
             "founders": ["founder_edu"],
             "market_size": ["tam", "market_cagr"],
@@ -677,9 +679,9 @@ class PipelineFailureTests(unittest.TestCase):
 
         self.assertEqual(len(selected), pipeline.config.COLLECTION_GAP_QUERY_LIMIT)
         # 验证补采数量不超过限制
-        self.assertLessEqual(len(selected), 4)
+        self.assertLessEqual(len(selected), 8)
 
-    def test_tavily_query_defaults_to_advanced_raw_content(self):
+    def test_tavily_query_defaults_to_basic_without_raw_content(self):
         bodies = []
 
         def fake_post(url, json, timeout, proxies=None):
@@ -689,10 +691,83 @@ class PipelineFailureTests(unittest.TestCase):
         with patch.object(pipeline.config, "TAVILY_API_KEYS", ["working-key"]), \
              patch.object(pipeline.requests, "post", side_effect=fake_post):
             pipeline._TAVILY_QUERY_CACHE.clear()
-            pipeline._search_tavily_query("DemoCo raw content test")
+            pipeline._search_tavily_query("DemoCo default Tavily test")
+
+        self.assertEqual(bodies[0]["search_depth"], "basic")
+        self.assertFalse(bodies[0]["include_raw_content"])
+
+    def test_tavily_query_normalizes_legacy_deep_search_depth(self):
+        bodies = []
+
+        def fake_post(url, json, timeout, proxies=None):
+            bodies.append(json)
+            return FakeResponse(200, {"results": [{"title": "ok"}]})
+
+        with patch.object(pipeline.config, "TAVILY_API_KEYS", ["working-key"]), \
+             patch.object(pipeline.requests, "post", side_effect=fake_post):
+            pipeline._TAVILY_QUERY_CACHE.clear()
+            pipeline._search_tavily_query("DemoCo legacy Tavily test", search_depth="deep")
 
         self.assertEqual(bodies[0]["search_depth"], "advanced")
-        self.assertTrue(bodies[0]["include_raw_content"])
+
+    def test_research_completeness_flags_failed_collection_below_85_percent(self):
+        raw = {
+            "_source_summary": {
+                "official_site": {"status": "failed", "count": 0, "detail": "超时"},
+                "scrapling_search": {"status": "failed", "count": 0, "detail": "超时"},
+                "tavily": {"status": "failed", "count": 0, "detail": "invalid search_depth"},
+                "github": {"status": "ok", "count": 3},
+                "youtube": {"status": "ok", "count": 3},
+                "whatweb": {"status": "ok", "count": 1},
+                "openbb": {"status": "empty", "count": 0},
+            },
+            "_evidence_pool": [object() for _ in range(7)],
+        }
+        records = [{
+            "version": "standard",
+            "company_name": "DemoCo",
+            "company_def": "DemoCo builds AI software.",
+        }]
+
+        report = pipeline._evaluate_research_completeness(raw, records)
+
+        self.assertFalse(report["passed"])
+        self.assertLess(report["completeness_ratio"], 0.85)
+        self.assertIn("official_site", report["weak_sources"])
+        self.assertIn("scrapling_search", report["weak_sources"])
+        self.assertIn("tavily", report["weak_sources"])
+
+    def test_research_completeness_passes_multi_source_required_field_coverage(self):
+        required = pipeline._load_required_field_contract_keys()
+        record = {"version": "standard"}
+        for key in required:
+            record[key] = f"{key} value"
+        raw = {
+            "_source_summary": {
+                "official_site": {"status": "ok", "count": 5},
+                "scrapling_search": {
+                    "status": "ok",
+                    "count": 15,
+                    "parsed_url_count": 30,
+                },
+                "tavily": {
+                    "status": "ok",
+                    "count": 20,
+                    "unique_url_count": 12,
+                    "intent_count": 5,
+                },
+                "github": {"status": "ok", "count": 3},
+                "youtube": {"status": "ok", "count": 3},
+                "whatweb": {"status": "ok", "count": 1},
+            },
+            "_evidence_pool": [object() for _ in range(25)],
+        }
+
+        report = pipeline._evaluate_research_completeness(raw, [record])
+
+        self.assertTrue(report["passed"])
+        self.assertGreaterEqual(report["completeness_ratio"], 0.85)
+        self.assertEqual(report["missing_required_fields"], [])
 
     def test_adaptive_initial_tavily_queries_use_basic_without_raw_content(self):
         plan = SimpleNamespace(
@@ -838,7 +913,11 @@ class PipelineFailureTests(unittest.TestCase):
              patch("services.card_value_builder.CardValueBuilder.build_card_values", return_value=[]), \
              patch("services.card_value_builder.CardValueBuilder.write_to_final_card_values", return_value=0), \
              patch("asset_pipeline.collect_image_variants_pipeline", return_value={}):
-            ids = pipeline.run_pipeline("Limitless", "https://www.limitless.ai")
+            ids = pipeline.run_pipeline(
+                "Limitless",
+                "https://www.limitless.ai",
+                research_options={"quality_gate": False},
+            )
 
         self.assertIsInstance(ids, list)
         self.assertTrue(inserted_batches)
@@ -875,7 +954,7 @@ class PipelineFailureTests(unittest.TestCase):
                 "DemoCo",
                 "https://demo.example",
                 progress_callback=lambda stage, detail: progress.append((stage, detail)),
-                research_options={"image_collection": False},
+                research_options={"image_collection": False, "quality_gate": False},
             )
 
         collect_images.assert_not_called()

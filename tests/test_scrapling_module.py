@@ -27,14 +27,15 @@ def test_build_field_queries_prioritizes_high_value_fields():
 def test_build_field_queries_generates_generic_public_field_queries():
     from webapp.research.scrapling.query_builder import build_field_queries
 
+    # 使用无显式模板的字段测试通用查询生成（字段名 → query: "{company} {readable_field}"）
     queries = build_field_queries(
         {"display_name": "Anthropic", "website_host": "anthropic.com"},
-        ["product_tech_stack", "regional_market_focus", "ltv"],
+        ["some_new_field", "another_test_key", "ltv"],
     )
 
     query_texts = [q.query for q in queries]
-    assert "Anthropic product tech stack" in query_texts
-    assert "Anthropic regional market focus" in query_texts
+    assert "Anthropic some new field" in query_texts
+    assert "Anthropic another test key" in query_texts
     assert not any(q.field_key == "ltv" for q in queries)
 
 
@@ -162,11 +163,13 @@ def test_scrapling_config_defaults_to_auto(monkeypatch):
 
     monkeypatch.delenv("SCRAPLING_FETCHER", raising=False)
     monkeypatch.delenv("SCRAPLING_SEARCH_DELAY_SECONDS", raising=False)
+    monkeypatch.delenv("SCRAPLING_ENABLED", raising=False)
 
     cfg = load_config()
 
     assert cfg.fetcher == "auto"
-    assert cfg.search_delay_seconds == 0
+    assert cfg.enabled is True  # 默认启用
+    assert cfg.search_delay_seconds == 1  # 默认 1 秒延迟避免搜索引擎限流
 
 
 def test_fetch_html_auto_uses_basic_fetcher_only(monkeypatch):

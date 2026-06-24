@@ -347,9 +347,12 @@ class CompetitionFieldsCategoryATest(unittest.TestCase):
         )
 
     def test_all_competition_fields_are_official_fact(self):
-        """所有竞争字段的 resolution_type 必须为 official_fact"""
+        """所有竞争字段的 resolution_type 必须为 official_fact（structured_extraction 除外）"""
         not_official = []
+        structured_fields = {"competitive_position"}  # 由 competitive_matrix 结构化提取
         for fk in self.COMPETITION_FIELDS:
+            if fk in structured_fields:
+                continue
             entry = self.manifest_fields.get(fk, {})
             rt = entry.get("resolution_type", "")
             if rt != "official_fact":

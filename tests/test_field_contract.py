@@ -254,7 +254,9 @@ class FieldContractTest(unittest.TestCase):
         # 允许少量内部字段不在 fields.json（如 funding_stage、main_product_img_src
         # 等系统内部使用的字段）
         tolerable = {"funding_stage", "main_product_img_src", "market_cagr",
-                      "market_size_source_note"}
+                      "market_size_source_note", "business_canvas",
+                      "competitors_structured", "growth_loops",
+                      "moat_dimensions", "unit_economics"}
         actual_missing = missing_in_json - tolerable
         self.assertEqual(
             len(actual_missing), 0,

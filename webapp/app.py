@@ -854,6 +854,10 @@ def _load_chart_company_domain(
                 })
                 matched_names.add(name.lower())
 
+    # Cap items to max_companies after estimated-competitor fallback
+    if len(items) > max_companies:
+        items = items[:max_companies]
+
     # --- 诊断日志 ---
     import logging
     _log = logging.getLogger(__name__)

@@ -115,57 +115,125 @@ def _extract_title(html: str, fallback: str = "") -> str:
     return text or fallback
 
 
+_ANTIBOT_MARKERS = (
+    "just a moment",
+    "cf-browser-verification",
+    "verify you are human",
+    "checking your browser",
+    "cf-chl-",
+    "/cdn-cgi/challenge-platform",
+)
+
+
+def _looks_antibot(html: str) -> bool:
+    """检测反爬页面（Cloudflare / JS Challenge 等）。"""
+    body = (html or "")[:4000].lower()
+    return any(m in body for m in _ANTIBOT_MARKERS)
+
+
 def _fetch_page_content(
     url: str,
     *,
     fallback_fetcher: str,
     timeout_seconds: int,
 ) -> tuple[str, str, dict]:
+    """多级回退页面抓取：requests → Scrapling Fetcher → StealthyFetcher → Playwright。"""
+    # 第1层：requests + trafilatura（最快）
     local = scrape_url(url, timeout=timeout_seconds)
     markdown = (local.get("markdown") or "").strip()
     if not local.get("error") and len(markdown) >= 200:
-        return (
-            markdown,
-            local.get("title") or "",
-            {
-                "page_fetch_method": "requests",
-                "page_fetch_error": "",
-            },
-        )
+        if not _looks_antibot(markdown):
+            return (
+                markdown,
+                local.get("title") or "",
+                {
+                    "page_fetch_method": "requests",
+                    "page_fetch_error": "",
+                },
+            )
 
-    page = fetch_html(url, fetcher=fallback_fetcher, timeout_seconds=timeout_seconds)
-    if page.status != "ok" or not page.html:
-        return (
-            "",
-            "",
-            {
-                "page_fetch_method": "failed",
-                "page_fetch_error": local.get("error") or page.error or page.status,
-                "scrapling_status": page.status,
-                "scrapling_error": page.error,
-            },
-        )
+    # 第2层：Scrapling Fetcher（curl-cffi，模拟浏览器 TLS）
+    for fetcher in ("fetcher", "stealthy"):
+        try:
+            page = fetch_html(url, fetcher=fetcher, timeout_seconds=max(timeout_seconds, 60))
+        except (ImportError, ModuleNotFoundError):
+            if fetcher == "fetcher":
+                continue
+            # StealthyFetcher 不可用，跳到 Playwright
+            break
+        except Exception:
+            continue
 
-    content = _extract_text(page.html)
-    if len(content) < 200:
-        return (
-            "",
-            "",
-            {
-                "page_fetch_method": "failed",
-                "page_fetch_error": local.get("error") or "Scrapling content too short",
-                "scrapling_status": page.status,
-                "scrapling_error": "content too short",
-            },
-        )
+        if page.status != "ok" or not page.html:
+            continue
+        if _looks_antibot(page.html):
+            continue
+
+        content = _extract_text(page.html)
+        if len(content) >= 200:
+            return (
+                content,
+                _extract_title(page.html),
+                {
+                    "page_fetch_method": f"scrapling_{fetcher}",
+                    "page_fetch_error": local.get("error") or "",
+                    "scrapling_status": page.status,
+                    "scrapling_error": page.error or "",
+                },
+            )
+
+    # 第3层：直接 Playwright（最后手段）
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                bypass_csp=True,
+            )
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+                window.chrome = {runtime: {}};
+            """)
+            page_obj = context.new_page()
+            page_obj.goto(url, wait_until="domcontentloaded", timeout=min(timeout_seconds * 1000, 30000))
+            page_obj.wait_for_timeout(2000)
+            html = page_obj.content()
+            context.close()
+            browser.close()
+
+            if html and not _looks_antibot(html):
+                content = _extract_text(html)
+                if len(content) >= 200:
+                    return (
+                        content,
+                        _extract_title(html),
+                        {
+                            "page_fetch_method": "playwright",
+                            "page_fetch_error": "",
+                        },
+                    )
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
     return (
-        content,
-        _extract_title(page.html),
+        "",
+        "",
         {
-            "page_fetch_method": "scrapling",
-            "page_fetch_error": local.get("error") or "",
-            "scrapling_status": page.status,
-            "scrapling_error": page.error,
+            "page_fetch_method": "failed",
+            "page_fetch_error": local.get("error") or "all fetch methods failed",
         },
     )
 

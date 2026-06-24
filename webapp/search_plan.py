@@ -111,6 +111,16 @@ TAVILY_QUERY_TEMPLATES: dict[str, list[str]] = {
         "{term} niche market blue ocean differentiation strategy",
         "{term} competitive white space expansion opportunity",
     ],
+    "financial_metrics": [
+        "{term} revenue ARR MRR financial performance metrics",
+        "{term} annual recurring revenue growth rate financials",
+        "{term} revenue run rate subscription income",
+    ],
+    "team_culture": [
+        "{term} team culture engineering hiring talent",
+        "{term} company culture values mission",
+        "{term} engineering team tech talent hiring",
+    ],
 }
 
 
@@ -135,7 +145,8 @@ def build_search_plan(display_name: str, root_domain: str,
                     "achievement", "product_tech_stack",
                     # v3 新增意图
                     "customers", "pricing_details", "youtube_transcript",
-                    "competitive_position", "differentiated_opportunity"]
+                    "competitive_position", "differentiated_opportunity",
+                    "financial_metrics", "team_culture"]
     if depth == "deep":
         core_intents.extend(["gtm", "timeline", "community", "interview"])
 

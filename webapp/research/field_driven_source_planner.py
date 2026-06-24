@@ -46,10 +46,10 @@ ADAPTER_FAMILY_MAP = {
 
 # ── 字段类别到默认 source 的映射 ──
 CATEGORY_DEFAULT_SOURCES = {
-    "A": ["official_site", "tavily_search"],
-    "B": ["official_site", "tavily_search"],
-    "C": ["tavily_search", "openbb"],
-    "D": ["official_site"],  # 仅官网自愿披露
+    "A": ["scrapling_search", "official_site", "tavily_search"],
+    "B": ["scrapling_search", "official_site", "tavily_search"],
+    "C": ["scrapling_search", "tavily_search", "openbb"],
+    "D": ["official_site"],
     "E": [],                 # 不适配，不采集
 }
 
@@ -131,7 +131,7 @@ class FieldDrivenSourcePlanner:
                     if fk not in adapter_field_groups[source_family]:
                         adapter_field_groups[source_family].append(fk)
                     plan.field_to_source_map.setdefault(fk, []).append(source_family)
-                    break  # 只分配到第一个可用 source
+                    # 多源覆盖：不 break，让所有 source 都采集该字段
 
         # 5. 构建 adapter 计划
         total_queries = 0

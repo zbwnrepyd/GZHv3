@@ -1,8 +1,8 @@
 """OfficialSiteAdapter — 官网采集适配器，封装 OfficialAgent 爬虫逻辑。
 
 Wraps OfficialAgent crawl logic via standard SourceAdapter interface.
-Fixed crawl of 5 key paths: /, /about, /pricing, /customers, /blog.
-Max 5 URLs, 15s timeout per URL.
+Multi-source discovery: fixed key paths + sitemap.xml + homepage internal links.
+Max 10+ URLs, 20s timeout per URL. Anti-bot fallback via Scrapling StealthyFetcher → Playwright.
 """
 from __future__ import annotations
 import logging
@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from research.source_adapter import SourceAdapter, SourceDocument, ADAPTER_REGISTRY
 from research.scrapling.page_fetcher import fetch_html
@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 # ── 适配器配置 ────────────────────────────────────────────────────────────────
 
-ADAPTER_PATHS = ["/", "/about", "/pricing", "/customers", "/blog"]
+ADAPTER_PATHS = [
+    "/", "/about", "/pricing", "/customers", "/blog",
+    "/products", "/team", "/docs", "/technology",
+]
 
 PATH_INTENT_MAP: dict[str, str] = {
     "/": "company_overview",
@@ -29,6 +32,37 @@ PATH_INTENT_MAP: dict[str, str] = {
     "/pricing": "pricing_detail",
     "/customers": "customer_detail",
     "/blog": "news_and_content",
+    "/products": "product_detail",
+    "/team": "team_detail",
+    "/docs": "documentation",
+    "/technology": "technology_detail",
+}
+
+# 常见 sitemap 路径
+SITEMAP_PATHS = ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml", "/wp-sitemap.xml"]
+
+# 路径关键词 → 意图映射（用于 sitemap 发现的未知路径）
+_PATH_KEYWORD_INTENT: dict[str, str] = {
+    "product": "product_detail",
+    "feature": "product_detail",
+    "pricing": "pricing_detail",
+    "plan": "pricing_detail",
+    "customer": "customer_detail",
+    "case": "customer_detail",
+    "testimonial": "customer_detail",
+    "about": "company_overview",
+    "team": "team_detail",
+    "career": "team_detail",
+    "blog": "news_and_content",
+    "news": "news_and_content",
+    "press": "news_and_content",
+    "doc": "documentation",
+    "guide": "documentation",
+    "tech": "technology_detail",
+    "platform": "technology_detail",
+    "api": "technology_detail",
+    "solutions": "product_detail",
+    "use-case": "customer_detail",
 }
 
 MAX_CHARS_PER_PAGE = 5000
@@ -59,6 +93,57 @@ def _looks_antibot_html(html: str) -> bool:
     visible = re.sub(r"(?is)<[^>]+>", " ", visible)
     visible = re.sub(r"\s+", " ", visible).strip()
     return len(visible) < 120
+
+
+def _discover_sitemap_urls(base_url: str, timeout: int = 15, limit: int = 20) -> list[str]:
+    """尝试从 sitemap.xml 发现更多页面路径。"""
+    import xml.etree.ElementTree as ET
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+
+    for sitemap_path in SITEMAP_PATHS:
+        try:
+            sitemap_url = urljoin(base_url, sitemap_path)
+            resp = session.get(sitemap_url, timeout=timeout, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+
+            content_type = resp.headers.get("Content-Type", "")
+            if "xml" not in content_type and not resp.text.strip().startswith("<?xml"):
+                continue
+
+            root = ET.fromstring(resp.text)
+            # 支持标准 sitemap 和 sitemap index
+            ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+            urls = []
+
+            # 先尝试获取 <url> 元素
+            locs = root.findall(".//ns:url/ns:loc", ns)
+            if not locs:
+                # 可能是 sitemap index — 获取子 sitemap
+                locs = root.findall(".//ns:sitemap/ns:loc", ns)
+
+            for loc in locs:
+                if loc.text:
+                    full_url = loc.text.strip()
+                    # 提取相对路径
+                    parsed = urlparse(full_url)
+                    if parsed.netloc and parsed.netloc != urlparse(base_url).netloc:
+                        continue  # 跳过外部链接
+                    path = parsed.path or "/"
+                    if path not in ("/", "") and path not in urls:
+                        urls.append(path)
+                    if len(urls) >= limit:
+                        break
+
+            if urls:
+                logger.info("Sitemap %s: found %d URLs", sitemap_path, len(urls))
+                return urls[:limit]
+        except Exception:
+            continue
+
+    return []
 
 
 def _extract_content_text(html: str) -> str:
@@ -102,9 +187,9 @@ class OfficialSiteAdapter(SourceAdapter):
     """
 
     source_family = "official_site"
-    timeout_seconds: int = 15
+    timeout_seconds: int = 20
     scrapling_timeout_seconds: int = 60  # Cloudflare 求解+network_idle 需 30-60s
-    max_documents: int = 5
+    max_documents: int = 10
 
     # ── 核心采集 ──
 
@@ -120,7 +205,7 @@ class OfficialSiteAdapter(SourceAdapter):
             company_identity: 公司身份信息，至少包含 website_host 或 website_url。
             field_targets: 目标字段键列表（当前用于日志，未来可用于动态选择路径）。
             budget: 预算约束 dict，可包含:
-                - max_documents: 最大返回文档数（上限 5）
+                - max_documents: 最大返回文档数（上限 10）
                 - timeout_seconds: 单页请求超时秒数
 
         Returns:
@@ -140,13 +225,27 @@ class OfficialSiteAdapter(SourceAdapter):
         base_url = f"https://{website_host}"
 
         # Budget 覆盖
-        max_docs = min(
-            budget.get("max_documents", self.max_documents),
-            len(ADAPTER_PATHS),
-        )
+        max_docs = budget.get("max_documents", self.max_documents)
         timeout = budget.get("timeout_seconds", self.timeout_seconds)
 
-        paths = ADAPTER_PATHS[:max_docs]
+        # ── 路径发现：固定路径 + Sitemap + 首页链接 ──
+        paths = list(ADAPTER_PATHS)
+
+        # Sitemap 发现
+        sitemap_urls = _discover_sitemap_urls(base_url, timeout=timeout)
+        if sitemap_urls:
+            logger.info("Sitemap discovered %d URLs for %s", len(sitemap_urls), website_host)
+            paths.extend(sitemap_urls)
+
+        # 去重并限制
+        seen = set()
+        unique_paths = []
+        for p in paths:
+            norm = p.rstrip("/") or "/"
+            if norm not in seen:
+                seen.add(norm)
+                unique_paths.append(p)
+        paths = unique_paths[:max_docs]
         fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         documents: list[SourceDocument] = []
         blocked_urls: list[SourceDocument] = []  # (url, path) 待浏览器回退
@@ -521,7 +620,15 @@ class OfficialSiteAdapter(SourceAdapter):
         metadata_extra: Optional[dict] = None,
     ) -> SourceDocument:
         title = f"{display_name or website_host}{path}"
-        intent = PATH_INTENT_MAP.get(path, "company_overview")
+        intent = PATH_INTENT_MAP.get(path)
+        if not intent:
+            # 从路径推断意图
+            for keyword, fallback_intent in _PATH_KEYWORD_INTENT.items():
+                if keyword in path.lower():
+                    intent = fallback_intent
+                    break
+            if not intent:
+                intent = "company_overview"
         metadata = {
             "path": path,
             "website_host": website_host,

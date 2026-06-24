@@ -72,6 +72,7 @@ _SOURCE_LABELS = {
 _TAVILY_RESULT_FIELDS = ("title", "url", "content", "score", "raw_content")
 _TAVILY_RAW_CONTENT_LIMIT = 2400
 _TAVILY_QUERY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_VALID_TAVILY_SEARCH_DEPTHS = {"ultra-fast", "fast", "basic", "advanced"}
 _ADAPTER_MODULE_BY_FAMILY = {
     "official_site": "official_site_adapter",
     "scrapling_search": "scrapling_search_adapter",
@@ -85,6 +86,16 @@ _ADAPTER_MODULE_BY_FAMILY = {
     "companieshouse": "companieshouse_adapter",
     "whatweb": "whatweb_adapter",
 }
+
+
+def _normalize_tavily_search_depth(value: Optional[str], default: str = "basic") -> str:
+    depth = str(value or "").strip().lower()
+    if depth in _VALID_TAVILY_SEARCH_DEPTHS:
+        return depth
+    if depth == "deep":
+        return "advanced"
+    fallback = str(default or "basic").strip().lower()
+    return fallback if fallback in _VALID_TAVILY_SEARCH_DEPTHS else "basic"
 _ADAPTER_CLASS_BY_FAMILY = {
     "official_site": "OfficialSiteAdapter",
     "scrapling_search": "ScraplingSearchAdapter",
@@ -641,7 +652,8 @@ def _search_tavily_query(query: str, include_images: bool = False,
     if not keys:
         return {"error": "TAVILY_API_KEYS not configured", "results": []}
 
-    depth = search_depth or getattr(config, "TAVILY_SEARCH_DEPTH", "basic")
+    raw_depth = search_depth or getattr(config, "TAVILY_SEARCH_DEPTH", "basic")
+    depth = _normalize_tavily_search_depth(raw_depth, "basic")
     include_raw = (
         bool(include_raw_content)
         if include_raw_content is not None
@@ -699,6 +711,14 @@ def _merge_tavily_results(raw: dict, supplement: list) -> None:
 
 
 def _needs_pre_gap_refetch(raw: dict) -> bool:
+    """判断是否需要在 LLM 分析前触发 Tavily 补采。
+
+    数据充分标准（满足以下 ALL 条件则不补采）：
+    - Tavily >= 20 唯一 URL 且 >= 5 意图覆盖
+    - Scrapling >= 30 URL 获取成功
+    - 官网 >= 5000 字符
+    - GitHub/YouTube 至少一个获取到数据
+    """
     src = raw.get("_source_summary", {}) if isinstance(raw, dict) else {}
     tavily_src = src.get("tavily", {}) or {}
     website_src = src.get("website", {}) or {}
@@ -706,21 +726,30 @@ def _needs_pre_gap_refetch(raw: dict) -> bool:
     youtube_src = src.get("youtube", {}) or {}
     scrapling_src = src.get("scrapling_search", {}) or {}
 
+    # 官网内容充足性检查
     website_chars = int(website_src.get("count", 0) or 0)
-    # 提高触发门槛：官网内容需 3000+ 字符才算"充足"
     website_enough = website_src.get("status") == "ok" and website_chars >= getattr(config, "COLLECTION_WEBSITE_SUFFICIENT_CHARS", 3000)
-    # 至少两个补充源有结果才算充分
-    secondary_count = sum(1 for s in (github_src, youtube_src, scrapling_src)
-                          if int(s.get("count", 0) or 0) > 0)
-    secondary_enough = secondary_count >= 2
-    if website_enough and secondary_enough:
-        return False
 
+    # 补充源覆盖检查：GitHub/YouTube 至少一个有结果
+    github_ok = int(github_src.get("count", 0) or 0) > 0
+    youtube_ok = int(youtube_src.get("count", 0) or 0) > 0
+    secondary_any = github_ok or youtube_ok
+
+    # Scrapling 开放网页覆盖检查
+    scrapling_ok = scrapling_src.get("status") == "ok" and int(scrapling_src.get("count", 0) or 0) >= 10
+
+    # Tavily 覆盖检查
     unique_urls = int(tavily_src.get("unique_url_count", 0) or 0)
     intents_found = int(tavily_src.get("intent_count", 0) or 0)
-    # 降低 URL/意图下限，让补采更容易触发
-    min_urls = int(getattr(config, "COLLECTION_MIN_UNIQUE_URLS", 10))
-    min_intents = int(getattr(config, "COLLECTION_MIN_INTENTS", 2))
+    tavily_enough = unique_urls >= 20 and intents_found >= 5
+
+    # 全部满足 → 不补采
+    if website_enough and secondary_any and scrapling_ok and tavily_enough:
+        return False
+
+    # 任一不满足 → 补采
+    min_urls = int(getattr(config, "COLLECTION_MIN_UNIQUE_URLS", 20))
+    min_intents = int(getattr(config, "COLLECTION_MIN_INTENTS", 5))
     return unique_urls < min_urls or intents_found < min_intents
 
 
@@ -753,7 +782,10 @@ def _initial_tavily_queries(plan) -> list:
     if not getattr(config, "TAVILY_ADAPTIVE_MODE", True):
         return list(plan.tavily_queries)
     limit = int(getattr(config, "TAVILY_INITIAL_QUERY_LIMIT", 10) or 10)
-    depth = getattr(config, "TAVILY_INITIAL_SEARCH_DEPTH", "basic")
+    depth = _normalize_tavily_search_depth(
+        getattr(config, "TAVILY_INITIAL_SEARCH_DEPTH", "basic"),
+        "basic",
+    )
     include_raw = bool(getattr(config, "TAVILY_INITIAL_INCLUDE_RAW_CONTENT", False))
     initial = []
     for q in list(plan.tavily_queries)[:limit]:
@@ -805,6 +837,133 @@ def _evaluate_collection_quality(raw: dict, evidence_items: Optional[list] = Non
     }
 
 
+def _source_ok(summary: dict | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    return summary.get("status") == "ok" and int(summary.get("count", 0) or 0) > 0
+
+
+def _ratio(value: float, target: float) -> float:
+    if target <= 0:
+        return 1.0
+    return max(0.0, min(float(value) / target, 1.0))
+
+
+def _evaluate_research_completeness(
+    raw: dict,
+    records: Optional[list[dict]] = None,
+    threshold: Optional[float] = None,
+) -> dict:
+    """Evaluate research data completeness against the production 85% target."""
+    threshold = float(
+        threshold
+        if threshold is not None
+        else getattr(config, "RESEARCH_COMPLETENESS_MIN", 0.85)
+    )
+    src = raw.get("_source_summary", {}) if isinstance(raw, dict) else {}
+    evidence_count = len(raw.get("_evidence_pool") or []) if isinstance(raw, dict) else 0
+
+    official = src.get("official_site") or src.get("website") or {}
+    scrapling = src.get("scrapling_search") or {}
+    tavily = src.get("tavily") or src.get("tavily_search") or {}
+    secondary_names = ("github", "youtube", "whatweb", "producthunt", "openbb", "sec", "companieshouse")
+
+    official_score = _ratio(int(official.get("count", 0) or 0), 3) if _source_ok(official) else 0.0
+    scrapling_score = 0.0
+    if _source_ok(scrapling):
+        scrapling_score = max(
+            _ratio(int(scrapling.get("count", 0) or 0), 15),
+            _ratio(int(scrapling.get("parsed_url_count", 0) or 0), 30),
+        )
+    tavily_score = 0.0
+    if _source_ok(tavily):
+        tavily_score = (
+            0.5 * _ratio(int(tavily.get("unique_url_count", 0) or 0), 10)
+            + 0.5 * _ratio(int(tavily.get("intent_count", 0) or 0), 2)
+        )
+    secondary_ok = sum(1 for name in secondary_names if _source_ok(src.get(name)))
+    secondary_score = _ratio(secondary_ok, 3)
+
+    source_score = (
+        0.25 * official_score
+        + 0.25 * scrapling_score
+        + 0.30 * tavily_score
+        + 0.20 * secondary_score
+    )
+    evidence_score = _ratio(evidence_count, 20)
+
+    required_fields = _load_required_field_contract_keys()
+    record_values: dict[str, object] = {}
+    for record in records or []:
+        for key, value in (record or {}).items():
+            if key not in record_values or _is_missing_value(record_values.get(key)):
+                record_values[key] = value
+    if records and required_fields:
+        missing_required = [
+            key for key in required_fields
+            if _is_missing_value(record_values.get(key))
+        ]
+        field_score = _ratio(len(required_fields) - len(missing_required), len(required_fields))
+    else:
+        missing_required = []
+        field_score = None
+
+    if field_score is None:
+        completeness = 0.65 * source_score + 0.35 * evidence_score
+    else:
+        completeness = 0.35 * source_score + 0.20 * evidence_score + 0.45 * field_score
+
+    source_scores = {
+        "official_site": official_score,
+        "scrapling_search": scrapling_score,
+        "tavily": tavily_score,
+        "secondary_sources": secondary_score,
+    }
+    weak_sources = [
+        name for name, score in source_scores.items()
+        if score < 0.5
+    ]
+    recommendations = []
+    if "official_site" in weak_sources:
+        recommendations.append("官网抓取不足：检查官网反爬、代理或 Playwright fallback")
+    if "scrapling_search" in weak_sources:
+        recommendations.append("开放网页搜索不足：检查 Scrapling/Bing 可达性与代理")
+    if "tavily" in weak_sources:
+        recommendations.append("Tavily 覆盖不足：检查 API Key、search_depth 和补采查询")
+    if missing_required:
+        recommendations.append(f"L3 必填字段缺失：{', '.join(missing_required[:8])}")
+
+    return {
+        "completeness_ratio": round(completeness, 4),
+        "threshold": threshold,
+        "passed": completeness >= threshold,
+        "source_score": round(source_score, 4),
+        "source_scores": {k: round(v, 4) for k, v in source_scores.items()},
+        "evidence_score": round(evidence_score, 4),
+        "evidence_count": evidence_count,
+        "field_score": None if field_score is None else round(field_score, 4),
+        "required_field_count": len(required_fields),
+        "missing_required_fields": missing_required,
+        "weak_sources": weak_sources,
+        "recommendations": recommendations,
+    }
+
+
+def _assert_research_completeness(report: dict, stage: str = "研究质量") -> None:
+    if report.get("passed"):
+        return
+    ratio = float(report.get("completeness_ratio", 0.0) or 0.0)
+    threshold = float(report.get("threshold", 0.85) or 0.85)
+    weak = ", ".join(report.get("weak_sources", [])[:5]) or "none"
+    missing = ", ".join(report.get("missing_required_fields", [])[:8]) or "none"
+    recommendations = "；".join(report.get("recommendations", [])[:4])
+    raise RuntimeError(
+        f"{stage}未达标: 数据完整度 {ratio:.0%} < {threshold:.0%}; "
+        f"弱采集源={weak}; 缺失字段={missing}"
+        + (f"; 建议={recommendations}" if recommendations else "")
+    )
+
+
 def _build_escalation_queries(plan, quality_report: dict) -> list[dict]:
     if not getattr(config, "TAVILY_ADAPTIVE_MODE", True):
         return []
@@ -812,7 +971,10 @@ def _build_escalation_queries(plan, quality_report: dict) -> list[dict]:
     if not missing:
         return []
     raw_intents = set(getattr(config, "TAVILY_ESCALATE_RAW_CONTENT_INTENTS", []) or [])
-    depth = getattr(config, "TAVILY_ESCALATE_SEARCH_DEPTH", "advanced")
+    depth = _normalize_tavily_search_depth(
+        getattr(config, "TAVILY_ESCALATE_SEARCH_DEPTH", "advanced"),
+        "advanced",
+    )
     default_raw = bool(getattr(config, "TAVILY_ESCALATE_INCLUDE_RAW_CONTENT", False))
     limit = int(getattr(config, "COLLECTION_GAP_QUERY_LIMIT", 5) or 5)
     rows = []
@@ -2836,9 +2998,9 @@ def run_pipeline(company_name: str, company_url: str,
             from search_plan import build_search_plan as _plan
             pre_plan = _plan(identity_display, identity_root, identity_host,
                            raw.get("aliases", []))
-            # 取前 6 组核心意图 query 做补充
+            # 取前 10 组核心意图 query 做补充
             extra = [{"query": q.query, "intent": q.intent}
-                    for q in pre_plan.tavily_queries[:6]]
+                    for q in pre_plan.tavily_queries[:10]]
             if extra:
                 _report(progress_callback, "补采", {
                     "message": f"采集不足({unique_urls}URL/{intents_found}意图)，预补采 {len(extra)} 组",
@@ -2859,6 +3021,17 @@ def run_pipeline(company_name: str, company_url: str,
                 }, job_id=job_id)
         else:
             raw["_pre_gap_refetch"] = {"extra_queries": 0, "reason": "website_or_secondary_sources_sufficient"}
+
+    collection_completeness = _evaluate_research_completeness(raw)
+    raw["_collection_completeness"] = collection_completeness
+    _report(progress_callback, "采集质量", {
+        "message": (
+            f"采集完整度 {collection_completeness['completeness_ratio']:.0%} "
+            f"(阈值 {collection_completeness['threshold']:.0%})"
+        ),
+        "quality": collection_completeness,
+        "sources": raw.get("_source_summary", {}),
+    }, job_id=job_id)
 
     # ── 噪音与上下文治理: source_documents → clean → chunk → rank → evidence_spans → pack ──
     company_key = raw.get("company_key", company_name.lower())
@@ -3011,6 +3184,18 @@ def run_pipeline(company_name: str, company_url: str,
                 raw["_gap_refetch_applied"] = False
         except Exception as e:
             raise RuntimeError(f"L3 补采缺口评估失败: {e}") from e
+
+    if research_options.get("quality_gate", getattr(config, "RESEARCH_COMPLETENESS_GATE", True)):
+        final_completeness = _evaluate_research_completeness(raw, records)
+        raw["_final_completeness"] = final_completeness
+        _report(progress_callback, "质量门控", {
+            "message": (
+                f"研究数据完整度 {final_completeness['completeness_ratio']:.0%} "
+                f"(阈值 {final_completeness['threshold']:.0%})"
+            ),
+            "quality": final_completeness,
+        }, job_id=job_id)
+        _assert_research_completeness(final_completeness, stage="研究数据完整度")
 
     # Step 3: 写库
     _check_cancel()

@@ -7,20 +7,28 @@ if WEBAPP not in sys.path:
     sys.path.insert(0, WEBAPP)
 
 
+class _FakeResp:
+    """模拟 requests.get 返回值，包含可检测的技术栈特征。"""
+    status_code = 200
+    headers = {
+        "Content-Type": "text/html; charset=UTF-8",
+        "Server": "nginx",
+        "X-Powered-By": "Express",
+        "cf-ray": "abc123",
+    }
+    text = (
+        "<html><head>"
+        '<script src="/assets/react-18.2.0.js"></script>'
+        '<link href="/css/tailwind-3.4.css" rel="stylesheet">'
+        "</head><body></body></html>"
+    )
+
+
 def test_whatweb_adapter_maps_text_output(monkeypatch):
     from research.adapters.whatweb_adapter import WhatWebAdapter
     import research.adapters.whatweb_adapter as module
 
-    class FakeCompleted:
-        returncode = 0
-        stdout = (
-            "https://example.com [200 OK] HTML5, HTTPServer[nginx], "
-            "JavaScript, JQuery[3.7.1], Title[Example]"
-        )
-        stderr = ""
-
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/whatweb")
-    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: FakeCompleted())
+    monkeypatch.setattr(module.requests, "get", lambda url, headers, timeout, allow_redirects: _FakeResp())
 
     docs = WhatWebAdapter().collect(
         {"display_name": "Example", "website_host": "example.com"},
@@ -30,15 +38,21 @@ def test_whatweb_adapter_maps_text_output(monkeypatch):
 
     assert len(docs) == 1
     assert docs[0].source_family == "whatweb"
-    assert "nginx" in docs[0].content
+    # Server→"Server", X-Powered-By→"X-Powered-By", cf-ray→"Cloudflare",
+    # react.js→"React", tailwind.css→"Tailwind CSS"
+    assert "React" in docs[0].content
+    assert "Cloudflare" in docs[0].content
     assert docs[0].metadata["detected_count"] >= 3
 
 
-def test_whatweb_adapter_returns_empty_when_command_missing(monkeypatch):
+def test_whatweb_adapter_returns_empty_when_url_unreachable(monkeypatch):
     from research.adapters.whatweb_adapter import WhatWebAdapter
     import research.adapters.whatweb_adapter as module
 
-    monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    def fake_get(url, headers, timeout, allow_redirects):
+        raise Exception("Connection refused")
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
 
     docs = WhatWebAdapter().collect(
         {"display_name": "Example", "website_host": "example.com"},

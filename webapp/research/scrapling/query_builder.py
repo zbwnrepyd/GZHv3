@@ -44,6 +44,30 @@ PUBLIC_FIELD_QUERY_TEMPLATES = {
         "{company} product overview",
         "{company} product features",
     ],
+    "main_product_highlight": [
+        "{company} product features capabilities",
+        "{company} product unique selling point",
+    ],
+    "main_product_achievement": [
+        "{company} product milestone achievement",
+        "{company} product growth users traction",
+    ],
+    "product_core_features": [
+        "{company} product features capabilities",
+        "{company} product functionality overview",
+    ],
+    "product_pain_points": [
+        "{company} solves problem pain point",
+        "{company} customer pain points addressed",
+    ],
+    "product_usage_playbook": [
+        "{company} product usage workflow tutorial",
+        "{company} how to use guide demo",
+    ],
+    "product_tech_stack": [
+        "{company} technology stack built with architecture",
+        "{company} AI model infrastructure tech",
+    ],
     "pricing_model": [
         "{company} pricing",
         "{company} pricing page",
@@ -52,6 +76,14 @@ PUBLIC_FIELD_QUERY_TEMPLATES = {
         "{company} pricing",
         "{company} plans pricing",
     ],
+    "pricing_tiers": [
+        "{company} pricing plans tiers pro enterprise",
+        "{company} pricing comparison free vs paid",
+    ],
+    "pricing_strategy": [
+        "{company} pricing strategy model",
+        "{company} monetization business model",
+    ],
     "customer_segment": [
         "{company} customers",
         "{company} customer segment",
@@ -59,6 +91,10 @@ PUBLIC_FIELD_QUERY_TEMPLATES = {
     "customer_names": [
         "{company} customers case study",
         "{company} customer stories",
+    ],
+    "customer_selection_reasons": [
+        "{company} why customers choose",
+        "{company} customer testimonial review",
     ],
     "customers": [
         "{company} customers case study",
@@ -70,19 +106,159 @@ PUBLIC_FIELD_QUERY_TEMPLATES = {
     ],
     "competitors_top3": [
         "{company} competitors alternatives",
-        "{company} top competitors",
+        "{company} top competitors comparison",
+    ],
+    "competitive_position": [
+        "{company} competitive positioning advantage",
+        "{company} market position differentiation",
+    ],
+    "competitors_summary": [
+        "{company} competitive landscape overview",
+        "{company} vs alternatives comparison",
+    ],
+    "differentiation_strategy": [
+        "{company} differentiation strategy competitive advantage",
+        "{company} unique selling proposition moat",
+    ],
+    "differentiated_opportunity": [
+        "{company} market gap opportunity underserved",
+        "{company} blue ocean niche expansion",
+    ],
+    "moat": [
+        "{company} competitive moat defensibility",
+        "{company} barriers to entry advantage",
+    ],
+    "company_achievement": [
+        "{company} milestone awards recognition",
+        "{company} notable achievement recognition",
+    ],
+    "company_achievements": [
+        "{company} milestone awards recognition",
+        "{company} notable achievement recognition",
+    ],
+    "core_competency": [
+        "{company} core competency technology advantage",
+        "{company} key capability differentiation",
+    ],
+    "tech_stack": [
+        "{company} technology stack built with architecture",
+        "{company} infrastructure tech stack engineering",
+    ],
+    "timeline_events": [
+        "{company} founded history timeline milestones",
+        "{company} company history major events",
+    ],
+    "gtm_strategy": [
+        "{company} go-to-market strategy",
+        "{company} growth strategy customer acquisition",
+    ],
+    "gtm_motion": [
+        "{company} go-to-market motion sales strategy",
+        "{company} enterprise B2B GTM approach",
+    ],
+    "growth_flywheel": [
+        "{company} growth flywheel loop",
+        "{company} viral growth engine",
+    ],
+    "acquisition_channels": [
+        "{company} customer acquisition channels",
+        "{company} marketing channels growth",
+    ],
+    "growth_strategy": [
+        "{company} growth strategy expansion plan",
+        "{company} scaling strategy future growth",
+    ],
+    "cold_start": [
+        "{company} cold start initial customers",
+        "{company} early traction first users",
+    ],
+    "market_opportunity": [
+        "{company} market opportunity",
+        "{company} market size potential",
+    ],
+    "market_cagr": [
+        "{company} market CAGR growth rate industry report",
+        "{company} market growth rate forecast",
+    ],
+    "market_size_value": [
+        "{company} market size TAM SAM industry report",
+        "{company} total addressable market value",
+    ],
+    "tam": [
+        "{company} TAM total addressable market size",
+        "{company} market size report industry",
+    ],
+    "regional_markets": [
+        "{company} markets regions global presence",
+        "{company} geographic expansion international",
+    ],
+    "regional_market_focus": [
+        "{company} target markets regions expansion",
+        "{company} geographic focus primary market",
+    ],
+    "ecosystem_positioning": [
+        "{company} ecosystem platform positioning",
+        "{company} AI ecosystem role position",
+    ],
+    "ecosystem_niche": [
+        "{company} ecosystem niche specialization",
+        "{company} vertical focus niche market",
     ],
     "github_metrics": [
         "{company} github",
-        "{company} github stars",
+        "{company} github stars repository",
     ],
     "producthunt_metrics": [
         "{company} Product Hunt",
         "{company} ProductHunt launch",
     ],
-    "market_opportunity": [
-        "{company} market opportunity",
-        "{company} market size",
+    "revenue_model": [
+        "{company} revenue model business model",
+        "{company} monetization how makes money",
+    ],
+    "team_size": [
+        "{company} team size employees headcount",
+        "{company} number of employees team",
+    ],
+    "team_highlight": [
+        "{company} team talent engineering",
+        "{company} leadership team executives",
+    ],
+    "founded_date": [
+        "{company} founded year established",
+        "{company} founding date incorporation",
+    ],
+    "core_business": [
+        "{company} core business what does do",
+        "{company} business model overview",
+    ],
+    "industry_positioning": [
+        "{company} industry positioning category",
+        "{company} market category sector",
+    ],
+    "market_track": [
+        "{company} market track sector category",
+        "{company} industry segment vertical",
+    ],
+    "market_subtrack": [
+        "{company} market subcategory niche",
+        "{company} subsegment specific vertical",
+    ],
+    "market_landscape_summary": [
+        "{company} market landscape overview analysis",
+        "{company} industry landscape competitive",
+    ],
+    "customer_segment_primary": [
+        "{company} target customer primary audience",
+        "{company} ideal customer profile ICP",
+    ],
+    "customer_segment_secondary": [
+        "{company} secondary customer segment",
+        "{company} additional customer verticals",
+    ],
+    "ideal_customer_profile": [
+        "{company} ideal customer profile ICP",
+        "{company} target buyer persona",
     ],
 }
 

@@ -98,8 +98,8 @@
       "title": "增长与GTM",
       "fields": [
         "growth_strategy",
-        "gtm_motion",
         "cold_start",
+        "gtm_strategy",
         "growth_flywheel",
         "acquisition_channels"
       ],

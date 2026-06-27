@@ -9,7 +9,7 @@
 ## 目录约定
 
 ```
-prompts/        — LLM Prompt文件（layer0-3 + layer3-group-a/b/c 三组枚举提取 + layer3-group-facts/market/operating L3拆组）
+prompts/        — LLM Prompt文件（layer0-3 + layer3-group-a/b/c 三组枚举提取 + layer3-group-facts/market/operating L3拆组 + layer_hook 钩子写作）
 market_intelligence/ — 市场情报模块（CLI）：采集→提取→估算→解析市场/财务字段
 webapp/         — Flask编辑后台 + 研究流水线（app.py入口）
   research/       — 证据层 + 结构化提取 + 深度优化模块：
@@ -17,6 +17,8 @@ webapp/         — Flask编辑后台 + 研究流水线（app.py入口）
                      business_canvas（L2商业模式画布/7 Powers壁垒）、
                      market_data_bridge（市场数据桥接）、time_series（时间序列快照）、
                      industry_benchmarks（行业基准SaaS/B2B/Consumer）、
+                     scoring_inference（v2评分枚举推断）、derivation_pass（字段推导）、
+                     hook_writer（钩子段落生成）、
                      evidence_extractor、field_resolver、field_status、field_validator
     context/      — 噪音与上下文治理：cleaner、chunker、ranker、packer、token_budget
     adapters/     — 11个SourceAdapter（含scrapling_search、Playwright fallback）
@@ -101,8 +103,10 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 数据库用sqlite3标准库，不用ORM
 - SQLite 迁移使用 `db/migrate.py`，通过 `schema_migrations` 幂等记录已执行 SQL；不要在启动路径手工重复 `executescript` 迁移文件
 - 规范化实体表（companies/products/metrics/sectors/founders/funding_rounds/customers/competitors/company_analysis/research_runs）通过迁移 020-030 创建，CRUD 统一走 `webapp/repositories/entity_repo.py`；不要直接写 SQL 操作这些表
-- 证据层：采集结果先入 `source_documents`（document_store），经 `document_cleaner` 清洗 → `document_chunker` 切块 → `evidence_ranker` 五维打分 → `_extract_evidence_spans_from_chunks` 预抽取 evidence_spans（必须在 LLM 前）→ `context_packer` 按 token 预算打包（L0 <= 18,000）→ 仅 packed_context 进入 LLM；`_bind_posthoc_weak_evidence` 仅做事后弱绑定（confidence <= 0.45，created_by_agent="posthoc_weak_matcher"，不得让字段 confirmed）
+- 证据层：采集结果先入 `source_documents`（document_store），经 `document_cleaner` 清洗 → `document_chunker` 切块 → `evidence_ranker` 五维打分 → `_extract_evidence_spans_from_chunks` 预抽取 evidence_spans（必须在 LLM 前）→ `context_packer` 按 token 预算打包（L0 <= 18,000）→ 仅 packed_context 进入 LLM；`_bind_posthoc_weak_evidence` 仅做事后弱绑定（confidence <= 0.45，created_by_agent="posthoc_weak_matcher"，不得让字段 confirmed）。chunk_type 含 `product_feature`（features/capabilities/agents/extension/gateway 等关键词），`unknown` 不再默认 `is_noise=1`。evidence_ranker 的 `_FIELD_SEMANTIC_KEYWORDS` 为 `product_core_features` 等 11 个字段注入语义关键词提升 `field_relevance_score`
 - 字段状态枚举：confirmed | derived | proxy | industry_avg | llm_extracted | manual_needed | unavailable | not_applicable | conflict | draft | hidden。LTV/CAC 四级降级：confirmed → proxy → industry_avg（标注"不代表公司披露"）→ unavailable
+- 字段占位值：`"" | 暂缺 | 待研究数据 | None | null | NULL | [] | {}` 均视为不可用。`"待研究数据"` 不出现在 render-data 的 item.value 中。缺失字段 status=manual_needed/unavailable，display_role fallback 从 `gtm_strategy`/`ecosystem_niche` 提供 ≤200 字参考摘要（不写库，不标 derived/confirmed）
+- 写库阶段不在热路径中同步调 LLM（`translate_field_value_if_needed()` 仅记日志）。翻译由采集阶段的 `TRANSLATE_ON_COLLECTION` 负责
 - 网页抓取用本地 trafilatura（`webapp/firecrawl_local.py`），不依赖外部 API
 - 环境变量只读取系统环境变量和项目根目录 `.env`；不要读取或恢复用户目录 `~/.env`
 - Tavily 可用 `TAVILY_API_KEYS` 配置逗号分隔的多 Key，额度限制时自动尝试下一个；不要把真实 Key 写进代码、测试、文档或日志
@@ -135,7 +139,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 定稿台左侧结构：卡片设置、文字定稿、图片定稿、进入排版。前三个面板点击后占据右侧主区域，互斥切换；「进入排版」是左侧底部固定按钮。旧版内容定稿/钩子文案/数据库字段面板已删除
 - 研究台公司库定稿进度优先读取 `final_fields` 的 confirmed/total 字段数；旧 `final_content` 卡片数仅作兼容回退
 - 研究台要展示 Tavily/GitHub/YouTube/官网抓取的链路状态与数量；公司库点击一条只展开该公司研究信息，点另一条时其他行折叠
-- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集；`COLLECTION_ENABLE_GAP_REFETCH=1`（默认）控制 Tavily pre-gap/L3 补采；`COLLECTION_WEBSITE_SUFFICIENT_CHARS=3000`（默认）官网字符数低于此值触发补采；`COLLECTION_MIN_UNIQUE_URLS=10`（默认）Tavily 唯一 URL 低于此值触发补采；`COLLECTION_MIN_INTENTS=2`（默认）Tavily 意图数低于此值触发补采
+- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集；`COLLECTION_ENABLE_GAP_REFETCH=1`（默认）控制 Tavily pre-gap/L3 补采；`COLLECTION_WEBSITE_SUFFICIENT_CHARS=3000`（默认）官网字符数低于此值触发补采；`COLLECTION_MIN_UNIQUE_URLS=10`（默认）Tavily 唯一 URL 低于此值触发补采；`COLLECTION_MIN_INTENTS=2`（默认）Tavily 意图数低于此值触发补采；`TRANSLATE_ON_COLLECTION=1`（默认）控制采集入库前英→中翻译；`TAVILY_SEARCH_DEPTH=basic`（默认）控制 Tavily 首轮搜索深度，补采轮自动使用 advanced
 - Evidence API（Goal 二新增）：`/api/evidence/company/<company>`、`/api/evidence/field/<company>/<field_key>`、`/api/evidence/candidate/<candidate_id>`；旧 `/api/evidence/<company_key>/<field_key>` 仍可用
 - RenderContract 主出口（Goal 一）：`GET /api/render-data/<company>?set=v3` 返回 `contracts/render_contract.schema.json` 格式的 8 卡结构，由 `webapp/services/render_assembler.py` 组装、`webapp/services/contract_validator.py` 校验
 - `LEGACY_CONTEXT_MODE=1` 显式开关绕过 chunk→rank→pack 治理（仅调试用，默认 0）
@@ -143,14 +147,25 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 ## 技术约束（补充）
 
 ### 开放网页搜索（Scrapling）
-- Scrapling 搜索使用 curl-cffi（`scrapling.fetchers.Fetcher`）直接抓取 SERP，不再先 `requests.get` 后 fallback；`webapp/research/scrapling/page_fetcher.py` 中 `fetch_html` 的 auto 模式只使用基础 Fetcher，不串行尝试 DynamicFetcher/StealthyFetcher（headless 太慢）。Fetcher 自动从环境变量注入 `HTTPS_PROXY`/`HTTP_PROXY` 代理
-- 官网抓取遇到 403 回退 Scrapling 时走级联策略：先 `fetcher`（curl-cffi，快），失败再 `stealthy`（Playwright + Cloudflare 求解，60s 超时）。不要直接上 StealthyFetcher
-- 默认搜索引擎仅 Bing（Google 在国内不可达）；可通过 `SCRAPLING_SEARCH_PROVIDERS` 覆盖
+- Scrapling 搜索使用 curl-cffi（`scrapling.fetchers.Fetcher`）直接抓取 SERP，不再先 `requests.get` 后 fallback；`webapp/research/scrapling/page_fetcher.py` 中 `fetch_html` 的 auto 模式只使用基础 Fetcher，不串行尝试 DynamicFetcher/StealthyFetcher（headless 太慢）
+- **Scrapling 0.4.x 代理**：废弃了环境变量自动检测，必须在 `_fetch_serp_with_scrapling()` 中显式传 `proxy=` 参数（`webapp/research/scrapling/serp_fetcher.py`）。代理仍从 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量读取
+- 官网页面抓取回退超时使用 `timeout_seconds`（默认 15s），不再用 `max(timeout_seconds, 60)`（60s 回退会在多 URL 并发时撑爆 300s hard_timeout）
+- 默认搜索引擎 Bing + DuckDuckGo（Google 在国内不可达）；可通过 `SCRAPLING_SEARCH_PROVIDERS` 覆盖
 - **红线**：`youtube_transcript_adapter.py` 的 `_webapp_dir` 必须是 3 层 `dirname`（`webapp/`），不是 2 层（`webapp/research/`）。2 层会导致本地 `research/scrapling/` 遮蔽 site-packages `scrapling`，Scrapling 全部超时失败
-- Scrapling 适配器 hard_timeout 设为 300s（默认 120s 不够）
+- Scrapling 适配器 hard_timeout 设为 300s；单次抓取最大 URL 数 `SCRAPLING_MAX_URLS_PER_COMPANY` 默认 50
 - 补充适配器（github/youtube/producthunt/openbb/companieshouse/sec）同样 hard_timeout=300s、timeout_seconds=30
 - Scrapling 需要 Python ≥ 3.10；用 `.venv/bin/python3`（3.12）启动 Flask，不要用系统 python3（3.9）。官网抓取 403 时除 Scrapling 级联外还增加直接 Playwright fallback（`_collect_with_playwright`）
 - 新增 ADAPTER_HARD_TIMEOUT_SECONDS 环境变量（默认 120），可在 .env 覆盖为 300
+
+### Tavily 两阶段搜索
+- 首轮使用 `basic` 深度（`TAVILY_SEARCH_DEPTH=basic` 或 `TAVILY_INITIAL_SEARCH_DEPTH`）
+- 补采轮（pre-gap refetch + L3 gap refetch）自动使用 `advanced` 深度，带 `search_depth: "advanced"` 参数
+- Tavily 4 种模式：`ultra-fast` | `fast` | `basic` | `advanced`；`deep` 是 `advanced` 别名
+
+### 采集时翻译
+- `TRANSLATE_ON_COLLECTION=1`（默认）：`_persist_source_documents_from_raw()` 入库前逐条中英文检测，非中文批量翻译
+- 复用 `deepseek_client.translate_to_chinese()` 和 `_is_predominantly_english()`（CJK vs 拉丁字母占比 >60%→英文）
+- 翻译后文本进入 source_documents → 下游清洗/切块/LLM 全部拿到中文，context_packer 的翻译变为空操作
 
 ### Market Intelligence 模块
 - 独立 CLI 模块：`python -m market_intelligence --company "Cursor" --domain cursor.com`
@@ -184,3 +199,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - Token 预算：`docs/prompt-token-budget.md`
 - 深度优化设计：`docs/superpowers/specs/2026-06-22-depth-optimization-design.md`
 - 深度优化计划：`docs/superpowers/plans/2026-06-22-depth-optimization-plan.md`
+- 字段→采集方法映射：`references/field_acquisition_map.json`（N:N，117字段×15采集方法）
+- v3 卡片字段配置：`contracts/card_sets/v3.json` + `db/init_composition_db.sql`（default_card_configs）保持一致。v3_card_07 含 5 字段：`growth_strategy`、`cold_start`（2026-06-27 取消 deprecated）、`gtm_strategy`、`growth_flywheel`、`acquisition_channels`
+- display_role 默认值：`webapp/services/role_defaults.py`（共享模块，card_config_service + render_assembler + card_config_repo 共用）
+- 公司列表发现：`get_companies()` 从三个来源发现公司——`research` 宽表 + `research_fields` 表 + `research_jobs` 表（兜底已完成但字段未写入 research_fields 的研究）

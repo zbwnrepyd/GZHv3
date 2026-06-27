@@ -63,3 +63,22 @@ class TestRenderApi:
         data = resp.get_json()
         assert data['card_set'] == 'v3'
         assert len(data['cards']) == 8
+
+    def test_v3_card_07_no_daishu_data_in_values(self, client):
+        """"待研究数据" 不应出现在 v3_card_07 的可展示 value 中。"""
+        resp = client.get('/api/render-data/Kilo?set=v3')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        card_07 = next(
+            (c for c in data['cards'] if c.get('card_id') == 'v3_card_07'),
+            None,
+        )
+        assert card_07 is not None, "v3_card_07 must exist"
+        for item in card_07.get('items', []):
+            value = item.get('value')
+            if value is not None:
+                value_str = str(value)
+                assert '待研究数据' not in value_str, (
+                    f"v3_card_07 field '{item.get('field_key')}' "
+                    f"contains '待研究数据' in value: {value_str[:80]}"
+                )

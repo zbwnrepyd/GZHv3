@@ -41,7 +41,7 @@ def load_config() -> ScraplingCrawlerConfig:
         search_delay_seconds=_env_int("SCRAPLING_SEARCH_DELAY_SECONDS", 2),
         max_queries_per_company=_env_int("SCRAPLING_MAX_QUERIES_PER_COMPANY", 15),
         results_per_query=_env_int("SCRAPLING_RESULTS_PER_QUERY", 10),
-        max_urls_per_company=_env_int("SCRAPLING_MAX_URLS_PER_COMPANY", 200),
-        timeout_seconds=_env_int("SCRAPLING_TIMEOUT_SECONDS", 10),
+        max_urls_per_company=_env_int("SCRAPLING_MAX_URLS_PER_COMPANY", 50),
+        timeout_seconds=_env_int("SCRAPLING_TIMEOUT_SECONDS", 15),
         max_concurrency=max(1, _env_int("SCRAPLING_MAX_CONCURRENCY", 8)),
     )

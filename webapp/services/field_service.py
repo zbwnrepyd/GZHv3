@@ -53,7 +53,7 @@ _FIELD_PAGE_META = {
     for sort_order, field_key in enumerate(fields)
 }
 
-_PLACEHOLDER_VALUES = {"", "暂缺", "None", "none", "null", "NULL", "[]", "{}"}
+_PLACEHOLDER_VALUES = {"", "暂缺", "待研究数据", "None", "none", "null", "NULL", "[]", "{}"}
 
 # Status → confidence_level mapping (mirrors render_assembler._STATUS_TO_CONFIDENCE_LEVEL)
 _STATUS_TO_CONFIDENCE_LEVEL = {
@@ -91,6 +91,70 @@ def load_field_contract() -> dict:
     contract_path = Path(__file__).resolve().parent.parent.parent / "contracts" / "fields.json"
     with open(contract_path) as f:
         return json.load(f)
+
+
+# 字段值可以保留英文的 field_key（专有名词、URL、代码、枚举值等）
+_ENGLISH_OK_FIELDS = frozenset({
+    'company_name', 'website_url', 'company_key', 'main_product_name',
+    'founder_name', 'founder_edu', 'main_product_img_src',
+    'company_type', 'pricing_model', 'stack_layer',
+    'funding_stage', 'customer_segment_type',
+    'ecosystem_niche', 'market_track', 'market_subtrack',
+    'ai_model_dependency', 'workflow_integration_level',
+    'data_flywheel', 'proprietary_data_asset',
+    'incumbent_direct_competitor', 'inference_cost_exposure',
+    'gtm_motion', 'pricing_strategy',
+    'competitors_top3', 'market_landscape_top_players',
+})
+
+
+def _is_predominantly_english(text: str) -> bool:
+    """检测文本是否以英文为主（拉丁字母占比 > 60%，且包含完整英文句子）。"""
+    import re
+    if not text or len(text) < 20:
+        return False
+    cjk = len(re.findall(r'[一-鿿㐀-䶿]', text))
+    latin = len(re.findall(r'[a-zA-Z]', text))
+    total = cjk + latin
+    if total == 0:
+        return False
+    # 拉丁字母 > 60% 且至少有 3 个英文单词
+    if latin / total <= 0.60:
+        return False
+    words = re.findall(r'[a-zA-Z]{3,}', text)
+    return len(words) >= 3
+
+
+def translate_field_value_if_needed(field_key: str, value: str) -> str:
+    """如果字段值以英文为主，记录警告并原样返回。
+
+    翻译应在采集阶段通过 TRANSLATE_ON_COLLECTION 完成，
+    写库热路径中不做同步 LLM 调用（耗时且阻塞管线）。
+    保留英文的字段（专有名词等）见 _ENGLISH_OK_FIELDS。
+    """
+    if field_key in _ENGLISH_OK_FIELDS:
+        return value
+    if not value or not isinstance(value, str):
+        return value
+    if value.strip() in ('', '暂缺'):
+        return value
+    stripped = value.strip()
+    if stripped.startswith('[') or stripped.startswith('{'):
+        return value
+    if not _is_predominantly_english(stripped):
+        return value
+
+    # 不在此处同步调 LLM 翻译——采集阶段 TRANSLATE_ON_COLLECTION 已处理。
+    # 此处仅记录日志，英文值保留入库（后续可批量异步翻译）。
+    import logging
+    _log = logging.getLogger("field_service")
+    _log.warning(
+        "field %s has English value (%d chars) — "
+        "TRANSLATE_ON_COLLECTION should have caught this. "
+        "Keeping original value.",
+        field_key, len(stripped),
+    )
+    return value
 
 
 def split_research_to_fields(research_row: dict, version: str = "standard") -> list[dict]:
@@ -195,6 +259,42 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
             cv_status = cv.get("resolution_status") or cv.get("status")
             final_status = cv_status or final.get("status", "draft")
 
+            # ── 轻量展示 fallback：cold_start/growth_flywheel/acquisition_channels ──
+            # 字段本身为空时，从 gtm_strategy 或 ecosystem_niche 提供参考摘要（不写库）
+            # 每个字段使用不同的来源优先顺序，避免三个字段共用同一段摘要
+            fallback_ref: dict[str, str] = {}
+            _FALLBACK_SOURCE_PREFERENCE = {
+                "cold_start":           [("gtm_strategy", "standard"), ("ecosystem_niche", "standard")],
+                "growth_flywheel":      [("ecosystem_niche", "standard"), ("gtm_strategy", "business")],
+                "acquisition_channels": [("gtm_strategy", "business"), ("ecosystem_niche", "business")],
+            }
+            if key in _FALLBACK_SOURCE_PREFERENCE and not _is_usable_value(final_value):
+                has_usable_version = any(
+                    _is_usable_value(v) for v in vers.values()
+                )
+                if not has_usable_version:
+                    for src_key, src_ver in _FALLBACK_SOURCE_PREFERENCE[key]:
+                        src_vers = versioned.get(src_key, {})
+                        src_val = src_vers.get(src_ver, "")
+                        if not _is_usable_value(src_val):
+                            # 回退到该来源的任意版本
+                            for vk, vv in src_vers.items():
+                                if _is_usable_value(vv):
+                                    src_val = vv
+                                    break
+                        if _is_usable_value(src_val):
+                            snippet = str(src_val)[:200]
+                            last_period = max(snippet.rfind("。"), snippet.rfind(". "))
+                            if last_period > 80:
+                                snippet = snippet[:last_period + 1]
+                            fallback_ref = {
+                                "source_field": src_key,
+                                "source_version": src_ver,
+                                "snippet": snippet,
+                            }
+                            break
+            # ── end fallback ──
+
             group_fields.append({
                 "field_key": key,
                 "field_label": field_def["field_label"],
@@ -206,6 +306,7 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
                 "card_no": cv.get("card_no"),  # 该值所属卡片页码
                 "confidence": cv.get("confidence_score") or cv.get("confidence"),
                 "confidence_level": _map_status_to_confidence_level(final_status),
+                **({"fallback_reference": fallback_ref} if fallback_ref else {}),
             })
         if group_fields:
             result.append({

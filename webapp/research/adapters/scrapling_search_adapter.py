@@ -186,9 +186,11 @@ def _fetch_page_content(
             )
 
     # 第2层：Scrapling Fetcher（curl-cffi，模拟浏览器 TLS）
+    # 使用与 SERP 抓取相同的超时，避免单页堵塞整个适配器
+    page_timeout = timeout_seconds
     for fetcher in ("fetcher", "stealthy"):
         try:
-            page = fetch_html(url, fetcher=fetcher, timeout_seconds=max(timeout_seconds, 60))
+            page = fetch_html(url, fetcher=fetcher, timeout_seconds=page_timeout)
         except (ImportError, ModuleNotFoundError):
             if fetcher == "fetcher":
                 continue
@@ -319,6 +321,8 @@ class ScraplingSearchAdapter(SourceAdapter):
             for provider in cfg.providers
             for page in range(1, SERP_PAGES + 1)
         ]
+        _SERP_MAX_RETRIES = 1  # 失败后重试 1 次（应对暂时性代理波动）
+        _SERP_RETRY_DELAY = 3
         with ThreadPoolExecutor(
             max_workers=_bounded_workers(cfg.max_concurrency, len(serp_tasks))
         ) as executor:
@@ -341,8 +345,23 @@ class ScraplingSearchAdapter(SourceAdapter):
                 if serp.status == "unavailable":
                     raise RuntimeError(f"Scrapling unavailable: {serp.error or 'dependency not installed'}")
                 if serp.status != "ok":
-                    serp_failed_count += 1
-                    continue
+                    # 重试 1 次（暂时性代理波动/Bing 限速）
+                    retried = False
+                    for attempt in range(_SERP_MAX_RETRIES):
+                        time.sleep(_SERP_RETRY_DELAY)
+                        retry = fetch_serp(
+                            provider, query,
+                            fetcher=cfg.fetcher,
+                            timeout_seconds=cfg.timeout_seconds,
+                            page=page,
+                        )
+                        if retry.status == "ok":
+                            serp = retry
+                            retried = True
+                            break
+                    if not retried:
+                        serp_failed_count += 1
+                        continue
                 serp_ok_count += 1
                 search_results.extend(parse_serp(provider, serp.html, query=query))
         self.last_summary["serp_ok_count"] = serp_ok_count
@@ -397,9 +416,13 @@ class ScraplingSearchAdapter(SourceAdapter):
                     continue
                 result = by_url.get(url)
                 source_family, trust_tier, source_score = classify_source(url, official_host)
+                # 官网域名通过 scrapling_search 抓到时，映射为 official_site 以获得正确的评分权重
+                effective_source_family = (
+                    "official_site" if source_family == "official" else self.source_family
+                )
                 title = page_title or (result.title if result else "")
                 docs.append(SourceDocument(
-                    source_family=self.source_family,
+                    source_family=effective_source_family,
                     source_url=url,
                     title=title,
                     content=content[:50000],

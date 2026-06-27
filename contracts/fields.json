@@ -62,7 +62,7 @@
       "fields": [
         {"field_key": "revenue_model", "field_label": "盈利方式", "type": "long_text"},
         {"field_key": "gtm_strategy", "field_label": "GTM 与增长策略", "type": "long_text"},
-        {"field_key": "cold_start", "field_label": "冷启动策略", "type": "long_text", "deprecated": true},
+        {"field_key": "cold_start", "field_label": "冷启动策略", "type": "long_text"},
         {"field_key": "customer_segment", "field_label": "客户细分", "type": "text"},
         {"field_key": "growth_flywheel", "field_label": "增长飞轮", "type": "long_text"},
         {"field_key": "pricing_model", "field_label": "定价模型", "type": "text"},

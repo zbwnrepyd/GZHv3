@@ -1565,6 +1565,355 @@ def _mark_and_log_fields(db_path: str, company_name: str, version: str,
         print(f"[field_status] failed: {e}")
 
 
+def _run_field_resolution_governance(db_path: str, company_name: str, version: str,
+                                      company_key: str, job_id: str = ""):
+    """字段治理层: 不可得字段分流 → 派生 → 补搜 → 评分依赖检查 → 写作生成。
+
+    在 _mark_and_log_fields 之后运行，专门处理 resolution_status='unavailable' 的字段。
+    五步流程:
+      1. UnavailableClassifier — 将 unavailable 字段分为 discard/infer/search_once/compute/write
+      2. DerivedFieldResolver — 对 infer 字段从 confirmed 字段 LLM 派生
+      3. TargetedSearchOnce — 对 search_once 字段做最多一轮 Tavily 补搜
+      4. ScoringDependencyCheck — 检查评分依赖，输出 blocked_by
+      5. WritingPass — 生成 hook_paragraph_1/2/3
+    """
+    try:
+        import json as _json
+        from research.unavailable_classifier import classify_all, get_classification_summary
+        from research.field_status import _load_manifest
+        from repositories.field_repo import update_field_status_batch
+
+        # ── 0. 从 DB 读取当前字段状态 ──
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        all_rows = conn.execute(
+            "SELECT field_key, field_value, resolution_status, unavailable_reason "
+            "FROM research_fields "
+            "WHERE company_name=? AND version=?",
+            (company_name, version),
+        ).fetchall()
+
+        unavailable_fields: dict[str, str | None] = {}
+        confirmed_fields: dict[str, str] = {}
+        all_field_pool: dict[str, str] = {}
+
+        for row in all_rows:
+            fk = row["field_key"]
+            fv = row["field_value"]
+            status = row["resolution_status"]
+            all_field_pool[fk] = fv or ""
+            if status == "unavailable":
+                unavailable_fields[fk] = fv
+            elif status == "confirmed":
+                confirmed_fields[fk] = fv or ""
+
+        conn.close()
+
+        if not unavailable_fields:
+            print(f"[governance] {company_name}: no unavailable fields, skipping")
+            return
+
+        print(f"[governance] {company_name}: {len(unavailable_fields)} unavailable, "
+              f"{len(confirmed_fields)} confirmed")
+
+        manifest = _load_manifest()
+        governance_results: list[dict] = []
+
+        # ── 1. Unavailable Classifier ──
+        classified = classify_all(unavailable_fields, set(confirmed_fields.keys()), manifest)
+        summary = get_classification_summary(classified)
+        print(f"[governance] classification: "
+              f"discard={summary.get('discard',{}).get('count',0)}, "
+              f"infer={summary.get('infer',{}).get('count',0)}, "
+              f"search_once={summary.get('search_once',{}).get('count',0)}, "
+              f"compute={summary.get('compute',{}).get('count',0)}, "
+              f"write={summary.get('write',{}).get('count',0)}")
+
+        # 写入 classification 结果到 field_resolution_logs
+        _write_classification_logs(db_path, company_name, version, classified)
+
+        # ── 2. Derived Field Resolver (infer 类) ──
+        infer_fields = [fk for fk, cf in classified.items()
+                        if cf.resolution_type == "infer"]
+        derived_results = {}
+        if infer_fields:
+            from research.derived_field_resolver import resolve_all_derived
+            derived_results = resolve_all_derived(infer_fields, confirmed_fields)
+            for fk, dr in derived_results.items():
+                if dr.success:
+                    governance_results.append({
+                        "field_key": fk,
+                        "field_value": dr.value,
+                        "resolution_status": dr.resolution_status,
+                        "unavailable_reason": "",
+                        "resolution_method": f"derived_{dr.method}",
+                        "company_key": company_key,
+                    })
+                    # 加入 confirmed pool 供后续步骤使用
+                    confirmed_fields[fk] = dr.value or ""
+                    all_field_pool[fk] = dr.value or ""
+
+        # ── 3. Targeted Search Once (search_once 类) ──
+        search_fields = [fk for fk, cf in classified.items()
+                         if cf.resolution_type == "search_once"]
+        if search_fields:
+            from research.targeted_search import search_all, extract_value_from_search_results
+            identity_info = _get_identity_info(db_path, company_name)
+            industry = identity_info.get("industry", "")
+            product_name = identity_info.get("main_product_name", "")
+
+            search_results = search_all(
+                search_fields, company_name,
+                industry=industry, product_name=product_name,
+                db_path=db_path,
+            )
+
+            # 对搜到的字段做简单的值提取
+            extracted = extract_value_from_search_results(search_results)
+            for fk, val in extracted.items():
+                if val and val.strip():
+                    governance_results.append({
+                        "field_key": fk,
+                        "field_value": val[:2000],
+                        "resolution_status": "llm_extracted",
+                        "unavailable_reason": "",
+                        "resolution_method": "targeted_search_once",
+                        "company_key": company_key,
+                    })
+                    all_field_pool[fk] = val[:2000]
+
+            # 标记已搜索
+            _mark_search_executed(db_path, company_name, search_fields)
+
+        # ── 4. Scoring Dependency Check ──
+        try:
+            from research.scoring_dependency_check import (
+                check_all_scores, format_blocked_checks, prioritize_resolution,
+            )
+            dep_results = check_all_scores(all_field_pool)
+            blocked_info = format_blocked_checks(dep_results)
+
+            # 写评分阻塞信息到 field_resolution_logs
+            for sf, detail in blocked_info["scores"].items():
+                if not detail["passed"] and detail["blocked_by"]:
+                    _write_blocked_log(db_path, company_name, version, sf,
+                                       detail["blocked_by"])
+
+            if not blocked_info["can_score"]:
+                print(f"[governance] scoring blocked: {blocked_info['summary']}")
+
+                # 尝试从已派生/补搜结果补齐 blocking 字段
+                suggestions = []
+                for sf, detail in blocked_info["scores"].items():
+                    if not detail["passed"]:
+                        suggestions.extend(
+                            prioritize_resolution(detail["blocked_by"], all_field_pool)
+                        )
+
+                # 对高优先级阻塞字段（stack_layer, incumbent_direct_competitor）尝试即时派生
+                for sug in suggestions:
+                    if sug["priority"] <= 2 and sug["source_available"]:
+                        from research.derived_field_resolver import resolve_derived_field
+                        dr = resolve_derived_field(sug["field_key"], confirmed_fields)
+                        if dr.success:
+                            governance_results.append({
+                                "field_key": sug["field_key"],
+                                "field_value": dr.value,
+                                "resolution_status": dr.resolution_status,
+                                "unavailable_reason": "",
+                                "resolution_method": f"derived_{dr.method}",
+                                "company_key": company_key,
+                            })
+                            all_field_pool[sug["field_key"]] = dr.value or ""
+                            print(f"[governance] unblocked: {sug['field_key']} ← {dr.source_fields}")
+
+                # 重新检查
+                dep_results = check_all_scores(all_field_pool)
+                blocked_info = format_blocked_checks(dep_results)
+                print(f"[governance] scoring after resolution: {blocked_info['summary']}")
+            else:
+                print(f"[governance] scoring: all dependencies satisfied")
+        except Exception as e:
+            print(f"[governance] scoring check failed (non-fatal): {e}")
+
+        # ── 5. Writing Pass (write 类) ──
+        write_fields = [fk for fk, cf in classified.items()
+                        if cf.resolution_type == "write"]
+        if write_fields:
+            from research.writing_pass import run_writing_pass
+            writing_results = run_writing_pass(all_field_pool)
+            for fk, wr in writing_results.items():
+                if wr.success:
+                    governance_results.append({
+                        "field_key": fk,
+                        "field_value": wr.value,
+                        "resolution_status": wr.resolution_status,
+                        "unavailable_reason": "",
+                        "resolution_method": wr.method,
+                        "company_key": company_key,
+                    })
+                    all_field_pool[fk] = wr.value or ""
+
+        # ── 6. 持久化所有治理结果 ──
+        if governance_results:
+            update_field_status_batch(db_path, company_name, version, governance_results)
+            # 更新 research_fields 的 field_value（对成功派生的字段）
+            _update_governance_field_values(db_path, company_name, version, governance_results)
+            print(f"[governance] {company_name}: {len(governance_results)} fields resolved")
+
+        # ── 7. 汇总 ──
+        final_unavailable = _count_unavailable_after(db_path, company_name, version)
+        print(f"[governance] {company_name}: remaining unavailable={final_unavailable} "
+              f"(was {len(unavailable_fields)})")
+
+    except Exception as e:
+        import traceback
+        print(f"[governance] failed (non-fatal): {e}")
+        traceback.print_exc()
+
+
+def _write_classification_logs(db_path: str, company_name: str, version: str,
+                                classified: dict):
+    """将分流结果写入 field_resolution_logs。"""
+    import json as _json
+    try:
+        conn = _get_db_conn(db_path)
+        for fk, cf in classified.items():
+            conn.execute(
+                """INSERT OR REPLACE INTO field_resolution_logs
+                   (company_name, version, field_key, resolution_status,
+                    resolution_method, resolution_type, source_fields,
+                    evidence_count, detail_json)
+                   VALUES (?, ?, ?, 'unavailable', 'classified',
+                    ?, ?, 0, ?)""",
+                (company_name, version, fk,
+                 cf.resolution_type,
+                 _json.dumps(cf.source_fields or []),
+                 _json.dumps({
+                     "reason": cf.reason,
+                     "category": cf.category,
+                     "method": cf.method,
+                 }, ensure_ascii=False)),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[governance] write classification logs failed: {e}")
+
+
+def _mark_search_executed(db_path: str, company_name: str, field_keys: list[str]):
+    """标记字段已执行补搜。"""
+    try:
+        conn = _get_db_conn(db_path)
+        for fk in field_keys:
+            conn.execute(
+                "UPDATE field_resolution_logs SET search_executed=1 "
+                "WHERE company_name=? AND field_key=?",
+                (company_name, fk),
+            )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _write_blocked_log(db_path: str, company_name: str, version: str,
+                        score_field: str, blocked_by: list[str]):
+    """写评分阻塞日志。"""
+    import json as _json
+    try:
+        conn = _get_db_conn(db_path)
+        conn.execute(
+            """INSERT OR REPLACE INTO field_resolution_logs
+               (company_name, version, field_key, resolution_status,
+                resolution_method, resolution_type, blocked_by,
+                evidence_count, detail_json)
+               VALUES (?, ?, ?, 'unavailable', 'scoring_blocked',
+                'compute', ?, 0, ?)""",
+            (company_name, version, score_field,
+             _json.dumps(blocked_by),
+             _json.dumps({"score_field": score_field, "blocked_by": blocked_by},
+                         ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def _update_governance_field_values(db_path: str, company_name: str, version: str,
+                                     results: list[dict]):
+    """更新 research_fields 的 field_value 和 resolution_status。"""
+    try:
+        conn = _get_db_conn(db_path)
+        for r in results:
+            fk = r.get("field_key", "")
+            fv = r.get("field_value", "")
+            status = r.get("resolution_status", "")
+            method = r.get("resolution_method", "")
+            if not fk or not fv:
+                continue
+            conn.execute(
+                """UPDATE research_fields
+                   SET field_value=?, resolution_status=?,
+                       resolution_method=?, updated_at=CURRENT_TIMESTAMP
+                   WHERE company_name=? AND version=? AND field_key=?
+                     AND (field_value IS NULL OR field_value='' OR field_value='暂缺')""",
+                (fv, status, method, company_name, version, fk),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[governance] update field values failed: {e}")
+
+
+def _count_unavailable_after(db_path: str, company_name: str, version: str) -> int:
+    try:
+        conn = _get_db_conn(db_path)
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM research_fields "
+            "WHERE company_name=? AND version=? AND resolution_status='unavailable'",
+            (company_name, version),
+        ).fetchone()
+        conn.close()
+        return row["cnt"] if row else 0
+    except Exception:
+        return -1
+
+
+def _get_identity_info(db_path: str, company_name: str) -> dict:
+    """从 DB 获取公司身份信息（用于补搜 query 构建）。"""
+    try:
+        conn = _get_db_conn(db_path)
+        row = conn.execute(
+            "SELECT field_value FROM research_fields "
+            "WHERE company_name=? AND field_key IN ('company_type', 'main_product_name') "
+            "ORDER BY field_key",
+            (company_name,),
+        ).fetchall()
+        conn.close()
+        result = {"industry": "", "main_product_name": ""}
+        for r in row:
+            fk = r["field_key"] if isinstance(r, dict) else r[0]
+            fv = r["field_value"] if isinstance(r, dict) else r[1]
+            if fk == "company_type" and fv:
+                result["industry"] = str(fv)
+            elif fk == "main_product_name" and fv:
+                result["main_product_name"] = str(fv)
+        return result
+    except Exception:
+        return {"industry": "", "main_product_name": ""}
+
+
+def _get_db_conn(db_path: str):
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _bind_posthoc_weak_evidence(db_path: str, company_key: str, company_name: str,
                                field_rows: list[dict], evidence_pool: list,
                                run_id: str = ""):
@@ -2546,6 +2895,39 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
                 _report(progress_callback, f"L3-{ver_name}",
                         f"枚举提取异常: {e}", job_id=job_id)
 
+            # ── Post-L3 Scoring Inference: v2 评分枚举字段推断 ──
+            try:
+                from research.scoring_inference import infer_v2_scoring_fields
+                v2_scoring = infer_v2_scoring_fields(
+                    api_key, parsed, progress_callback, job_id
+                )
+                if v2_scoring:
+                    parsed.update(v2_scoring)
+                    _report(progress_callback, f"L3-{ver_name}",
+                            f"v2 评分推断: {len(v2_scoring)} 字段", job_id=job_id)
+            except Exception as e:
+                _report(progress_callback, f"L3-{ver_name}",
+                        f"v2 评分推断异常（非阻断）: {e}", job_id=job_id)
+
+            # ── Derivation Pass: 从已有文本推导缺失字段 ──
+            try:
+                from research.derivation_pass import run_derivation_pass
+                derived_fields = run_derivation_pass(
+                    api_key, parsed, progress_callback, job_id
+                )
+                # 注意: 只写入 parsed 中尚未有值的字段，不覆盖已有好数据
+                for fk, fv in derived_fields.items():
+                    if not parsed.get(fk) or str(parsed.get(fk)).strip() in (
+                        "", "暂缺", "null", "None"
+                    ):
+                        parsed[fk] = fv
+                if derived_fields:
+                    _report(progress_callback, f"L3-{ver_name}",
+                            f"字段推导: {len(derived_fields)} 字段", job_id=job_id)
+            except Exception as e:
+                _report(progress_callback, f"L3-{ver_name}",
+                        f"字段推导异常（非阻断）: {e}", job_id=job_id)
+
             missing_founder_fields = _missing_founder_fields(parsed)
             if missing_founder_fields and _has_founder_detail_signal(l0_result):
                 _report(
@@ -2568,6 +2950,27 @@ def llm_analysis(company_name: str, company_url: str, raw_data: dict,
             parsed["company_name"] = company_name
             parsed["version"] = ver_name
             all_records.append(parsed)
+
+    # ── Hook Paragraph Generation（仅 standard 版本，写作任务）──
+    standard_record = next(
+        (r for r in all_records if r.get("version") == "standard"), None
+    )
+    if standard_record and api_key:
+        try:
+            from research.hook_writer import generate_hook_paragraphs
+            hook_prompt = _load_prompt_text("layer_hook")
+            if hook_prompt:
+                hooks = generate_hook_paragraphs(
+                    api_key, standard_record, hook_prompt,
+                    progress_callback, job_id
+                )
+                if hooks:
+                    standard_record.update(hooks)
+                    _report(progress_callback, "钩子写作",
+                            f"生成 {len(hooks)}/3 段钩子", job_id=job_id)
+        except Exception as e:
+            _report(progress_callback, "钩子写作",
+                    f"钩子生成异常（非阻断）: {e}", job_id=job_id)
 
     return all_records
 
@@ -2777,11 +3180,77 @@ def _validate_record_identity(records: list[dict], company_url: str):
 
 # ── 文档治理：source_documents → clean → chunk → rank → evidence_spans ──
 
+# 采集时翻译开关（默认开启，与 context_packer 中的 TRANSLATE_CONTEXT_TO_CHINESE 互补）
+import os as _os_persist
+_COLLECTION_TRANSLATE_ENABLED = _os_persist.environ.get("TRANSLATE_ON_COLLECTION", "1") == "1"
+
+
+def _is_predominantly_english(text: str) -> bool:
+    """检测 text 是否以英文为主（需翻译为中文）。"""
+    if not text:
+        return False
+    cjk = sum(1 for c in text if '一' <= c <= '鿿' or '぀' <= c <= 'ヿ')
+    latin = sum(1 for c in text if c.isascii() and c.isalpha())
+    total = cjk + latin
+    if total == 0:
+        return True
+    return (latin / total) > 0.6
+
+
+def _translate_evidence_pool_on_collection(evidence_pool: list) -> None:
+    """采集时翻译：遍历 evidence_pool，批量翻译非中文内容，原地修改。
+
+    每条内容入库前判断是否为中文（_is_predominantly_english），
+    非中文则调用 translate_to_chinese 批量翻译为简体中文。
+    """
+    if not _COLLECTION_TRANSLATE_ENABLED:
+        return
+    if not evidence_pool:
+        return
+
+    # 收集需要翻译的条目索引和文本
+    to_translate: list[tuple[int, str]] = []
+    for idx, e in enumerate(evidence_pool):
+        content = (getattr(e, "content", "") or "").strip()
+        if not content:
+            continue
+        if _is_predominantly_english(content):
+            to_translate.append((idx, content))
+
+    if not to_translate:
+        return
+
+    # 批量翻译
+    texts = [t for _, t in to_translate]
+    try:
+        from deepseek_client import translate_to_chinese
+        translated = translate_to_chinese(texts)
+    except Exception as e:
+        print(f"[translate-on-collect] batch translate failed: {e}")
+        return
+
+    # 原地替换翻译结果
+    translated_count = 0
+    for (idx, original), result in zip(to_translate, translated):
+        if result and result != original:
+            try:
+                evidence_pool[idx].content = result
+                translated_count += 1
+            except Exception:
+                pass
+
+    if translated_count:
+        print(f"[translate-on-collect] {translated_count}/{len(to_translate)} 条翻译为中文")
+
+
 def _persist_source_documents_from_raw(raw: dict, run_id: str = "") -> list[int]:
     """将 evidence_pool 条目写入 source_documents（如果尚未存在）。
 
     噪音与上下文治理: source_documents 是仓库，不是 prompt。
     返回 doc_id 列表。
+
+    采集时翻译: 每条内容入库前判断是否为中文，非中文则批量翻译为中文。
+    由环境变量 TRANSLATE_ON_COLLECTION 控制（默认开启）。
     """
     try:
         from research.document_store import insert_document
@@ -2789,6 +3258,9 @@ def _persist_source_documents_from_raw(raw: dict, run_id: str = "") -> list[int]
         doc_ids = []
         evidence_pool = raw.get("_evidence_pool", [])
         company_key = raw.get("company_key", raw.get("company_name", ""))
+
+        # ── 采集时翻译：入库前批量翻译非中文内容 ──
+        _translate_evidence_pool_on_collection(evidence_pool)
 
         source_score_map = {"website": "official", "official_blog": "official",
                             "github": "developer", "youtube": "media",
@@ -3088,8 +3560,8 @@ def run_pipeline(company_name: str, company_url: str,
             from search_plan import build_search_plan as _plan
             pre_plan = _plan(identity_display, identity_root, identity_host,
                            raw.get("aliases", []))
-            # 取前 10 组核心意图 query 做补充
-            extra = [{"query": q.query, "intent": q.intent}
+            # 取前 10 组核心意图 query 做补充，补采使用 advanced 深度搜索
+            extra = [{"query": q.query, "intent": q.intent, "search_depth": "advanced"}
                     for q in pre_plan.tavily_queries[:10]]
             if extra:
                 _report(progress_callback, "补采", {
@@ -3226,9 +3698,9 @@ def run_pipeline(company_name: str, company_url: str,
                 gap_fields = l3_gap_report["missing_required_fields"][:8]
                 if gap_fields:
                     gap_queries = []
-                    for fk in gap_fields[:4]:  # 最多4条
+                    for fk in gap_fields[:4]:  # 最多4条，补采使用 advanced 深度搜索
                         q = f'"{identity_display}" {fk.replace("_", " ")}'
-                        gap_queries.append({"query": q, "intent": "gap_refetch"})
+                        gap_queries.append({"query": q, "intent": "gap_refetch", "search_depth": "advanced"})
 
                     if gap_queries:
                         supplement = _search_tavily(gap_queries, progress_callback, job_id)
@@ -3295,7 +3767,7 @@ def run_pipeline(company_name: str, company_url: str,
     ids = []
 
     # Step 3.5: 写入字段级表（解耦架构 — 字段不天然属于任何卡片）
-    from services.field_service import split_research_to_fields
+    from services.field_service import split_research_to_fields, translate_field_value_if_needed
     from repositories.field_repo import insert_research_fields_batch
     all_extracted_fields = {}
     for record in records:
@@ -3309,6 +3781,10 @@ def run_pipeline(company_name: str, company_url: str,
         }
         field_rows = split_research_to_fields(field_record, version)
         if field_rows:
+            # ── 英文值自动翻译为中文（p0: 防止 LLM 输出英文穿透到前端）──
+            for fr in field_rows:
+                fr["field_value"] = translate_field_value_if_needed(
+                    fr.get("field_key", ""), fr.get("field_value", ""))
             # Collect fields for post-write snapshot
             for fr in field_rows:
                 fk = fr.get("field_key", "")
@@ -3342,6 +3818,14 @@ def run_pipeline(company_name: str, company_url: str,
             # P2: ForumModerator 字段质量检查
             _run_forum_moderation(
                 config.DB_PATH_RESEARCH, company_name, version, field_rows)
+
+    # ── 字段治理层: 不可得字段分流 → 派生 → 补搜 → 评分 → 写作 ──
+    _check_cancel()
+    _run_field_resolution_governance(
+        config.DB_PATH_RESEARCH, company_name, version,
+        raw.get("company_key", company_name.lower()),
+        job_id=job_id,
+    )
 
     # ── L1/L2 结构化字段写入（非阻断）──
     from repositories.field_repo import upsert_final_field

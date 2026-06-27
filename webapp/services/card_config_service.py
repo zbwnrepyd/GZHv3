@@ -48,22 +48,10 @@ def create_default_cards_for_company(db_path: str, company_name: str,
     return card_ids
 
 
-def _default_role_for_field(field_key: str) -> str:
-    if field_key in ("company_name",):
-        return "title"
-    if field_key in ("company_type",):
-        return "subtitle"
-    return "body"
-
-
-def _default_role_for_media(media_key: str) -> str:
-    if media_key == "logo":
-        return "logo"
-    if media_key in ("flywheel", "timeline", "chart_competitive", "chart_ecosystem"):
-        return "chart"
-    if media_key in ("competitors_logo_strip",):
-        return "decoration"
-    return "hero_image"
+# Re-export from shared module for backward compatibility.
+# New code should import directly from services.role_defaults.
+from services.role_defaults import default_role_for_field as _default_role_for_field
+from services.role_defaults import default_role_for_media as _default_role_for_media
 
 
 def get_card_composition(db_path: str, company_name: str,

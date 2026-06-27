@@ -38,7 +38,10 @@ def get_db(db_path: str):
 
 def get_companies(db_path: str, final_db_path: str = "",
                   composition_db_path: str = "") -> list[dict]:
-    """列出所有已研究公司，附带定稿进度。total 从卡片设置的启用卡片数读取。"""
+    """列出所有已研究公司，附带定稿进度。total 从卡片设置的启用卡片数读取。
+
+    同时从 research 宽表（旧路径）和 research_fields 表（新路径）发现公司。
+    """
     with get_db(db_path) as conn:
         _ensure_research_schema(conn)
         # 兼容旧 schema（无 company_key 列）
@@ -62,9 +65,12 @@ def get_companies(db_path: str, final_db_path: str = "",
                 "GROUP BY LOWER(company_name) "
                 "ORDER BY created_at DESC LIMIT 200"
             ).fetchall()
+        seen_keys: set[str] = set()
+        seen_names: set[str] = set()  # 也按 display_name 去重（避免 ckey 不同但同公司）
         companies = []
         for row in rows:
             ckey = row["company_key"]
+            seen_keys.add(ckey.lower())
             if has_ckey:
                 latest = conn.execute(
                     "SELECT * FROM research "
@@ -82,6 +88,7 @@ def get_companies(db_path: str, final_db_path: str = "",
                     (ckey,),
                 ).fetchone()
             display_name = latest["company_name"] if latest else ckey
+            seen_names.add(display_name.lower())
             latest_cname = latest["company_name"] if latest else ckey
             filled = 0
             if latest:
@@ -122,7 +129,72 @@ def get_companies(db_path: str, final_db_path: str = "",
                     **scoring,
                 }
             )
-        return companies
+
+        # ── 从 research_fields 补发现：pipeline 不再写 research 宽表 ──
+        rf_companies = _discover_companies_from_research_fields(conn, seen_keys, seen_names)
+        for rf in rf_companies:
+            ckey = rf["company_key"]
+            display_name = rf["display_name"]
+            completeness = _research_fields_completeness(conn, display_name, ckey) or 0
+            total = _count_enabled_cards(composition_db_path, display_name, ckey)
+            confirmed = 0
+            if final_db_path:
+                confirmed, _ = _count_final_fields_progress(final_db_path, display_name, ckey)
+            confirmed = min(confirmed or 0, total)
+            website_url = rf.get("website_url") or _latest_job_company_url(conn, display_name)
+            # 从 research_fields 读取 company_type
+            company_type = _lookup_field_value(conn, display_name, ckey, "company_type")
+            scoring = _scoring_from_research_fields(conn, display_name, ckey)
+            companies.append({
+                "company_name": display_name,
+                "company_key": ckey,
+                "display_name": display_name,
+                "category": company_type or "",
+                "company_url": website_url or "",
+                "website_url": website_url or "",
+                "created_at": rf.get("created_at", ""),
+                "researched_at": rf.get("created_at", ""),
+                "completeness": completeness,
+                "confirmed": confirmed,
+                "total": total,
+                **scoring,
+            })
+
+        # ── 从 research_jobs 补发现：某些 pipeline 路径不写 research_fields ──
+        rj_companies = _discover_companies_from_research_jobs(conn, seen_keys, seen_names)
+        for rj in rj_companies:
+            ckey = rj["company_key"]
+            display_name = rj["display_name"]
+            completeness = _research_fields_completeness(conn, display_name, ckey)
+            if completeness is None:
+                completeness = _card_values_completeness(conn, ckey) or 0
+            total = _count_enabled_cards(composition_db_path, display_name, ckey)
+            confirmed = 0
+            if final_db_path:
+                confirmed, _ = _count_final_fields_progress(final_db_path, display_name, ckey)
+            confirmed = min(confirmed or 0, total)
+            website_url = rj.get("website_url") or ""
+            # 从 research_fields 读取 company_type，fallback 到 final_card_values
+            company_type = _lookup_field_value(conn, display_name, ckey, "company_type")
+            scoring = _scoring_from_research_fields(conn, display_name, ckey)
+            companies.append({
+                "company_name": display_name,
+                "company_key": ckey,
+                "display_name": display_name,
+                "category": company_type or "",
+                "company_url": website_url,
+                "website_url": website_url,
+                "created_at": rj.get("created_at", ""),
+                "researched_at": rj.get("created_at", ""),
+                "completeness": completeness,
+                "confirmed": confirmed,
+                "total": total,
+                **scoring,
+            })
+
+        # 按 created_at 降序重排
+        companies.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+        return companies[:200]
 
 
 def _research_fields_completeness(conn: sqlite3.Connection, company_name: str,
@@ -165,6 +237,181 @@ def _research_fields_completeness(conn: sqlite3.Connection, company_name: str,
         return None
     filled = max(int(row["filled"] or 0) for row in rows)
     return round(filled / len(required) * 100)
+
+
+def _discover_companies_from_research_fields(
+    conn: sqlite3.Connection, seen_keys: set[str], seen_names: set[str],
+) -> list[dict]:
+    """从 research_fields 表发现 research 宽表中不存在的公司。
+
+    返回 list[dict]，每项含 company_key, display_name, created_at, website_url。
+    """
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "research_fields" not in tables:
+        return []
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(research_fields)").fetchall()
+    }
+    # 需要 company_key 列来做去重
+    has_ckey = "company_key" in columns
+    has_created_at = "created_at" in columns
+
+    companies: list[dict] = []
+    rows = conn.execute(
+        "SELECT DISTINCT company_name, "
+        + ("COALESCE(NULLIF(company_key,''), LOWER(company_name)) as company_key, " if has_ckey else "LOWER(company_name) as company_key, ")
+        + ("MAX(created_at) as created_at " if has_created_at else "'' as created_at ")
+        + "FROM research_fields "
+        + "GROUP BY " + ("COALESCE(NULLIF(company_key,''), LOWER(company_name))" if has_ckey else "LOWER(company_name)")
+    ).fetchall()
+
+    for row in rows:
+        ckey = (row["company_key"] or "").lower()
+        display_name = row["company_name"] or ckey
+        if ckey in seen_keys or display_name.lower() in seen_names:
+            continue
+        seen_keys.add(ckey)
+        seen_names.add(display_name.lower())
+        website_url = _lookup_field_value(conn, display_name, ckey, "website_url") or ""
+        companies.append({
+            "company_key": ckey,
+            "display_name": display_name,
+            "created_at": row["created_at"] or "",
+            "website_url": website_url,
+        })
+    return companies
+
+
+def _discover_companies_from_research_jobs(
+    conn: sqlite3.Connection, seen_keys: set[str], seen_names: set[str],
+) -> list[dict]:
+    """从 research_jobs 表发现 research_fields 中不存在的公司（已完成的研究）。"""
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "research_jobs" not in tables:
+        return []
+
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(research_jobs)").fetchall()
+    }
+    has_ckey = "company_key" in columns
+    has_display_name = "display_name" in columns
+
+    # 取每个公司最新一次完成的研究
+    if has_ckey:
+        group_by = "COALESCE(NULLIF(company_key,''), LOWER(company_name))"
+    else:
+        group_by = "LOWER(company_name)"
+
+    rows = conn.execute(
+        f"SELECT company_name, company_url, "
+        + ("COALESCE(NULLIF(company_key,''), LOWER(company_name)) as company_key, " if has_ckey else "LOWER(company_name) as company_key, ")
+        + ("MAX(display_name) as display_name, " if has_display_name else "company_name as display_name, ")
+        + "MAX(created_at) as created_at "
+        + "FROM research_jobs "
+        + "WHERE status='done' "
+        + f"GROUP BY {group_by} "
+        + "ORDER BY created_at DESC"
+    ).fetchall()
+
+    companies: list[dict] = []
+    for row in rows:
+        ckey = (row["company_key"] or "").lower()
+        display_name = (row["display_name"] if has_display_name and row["display_name"] else row["company_name"])
+        if ckey in seen_keys or display_name.lower() in seen_names:
+            continue
+        seen_keys.add(ckey)
+        seen_names.add(display_name.lower())
+        companies.append({
+            "company_key": ckey,
+            "display_name": display_name,
+            "created_at": row["created_at"] or "",
+            "website_url": row["company_url"] or "",
+        })
+    return companies
+
+
+def _card_values_completeness(conn: sqlite3.Connection, company_key: str) -> int | None:
+    """从 final_card_values 表计算字段完整度（research_fields 不存在时的 fallback）。"""
+    tables = {
+        row["name"]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    if "final_card_values" not in tables:
+        return None
+    required = list(dict.fromkeys(REQUIRED_RESEARCH_FIELDS))
+    placeholders = ",".join(["?"] * len(required))
+    row = conn.execute(
+        f"""
+        SELECT COUNT(DISTINCT field_key) AS filled
+        FROM final_card_values
+        WHERE company_key=?
+          AND field_key IN ({placeholders})
+          AND final_value IS NOT NULL
+          AND TRIM(CAST(final_value AS TEXT)) NOT IN ('', '暂缺')
+        """,
+        [company_key, *required],
+    ).fetchone()
+    if not row or not row["filled"]:
+        return None
+    return round(int(row["filled"] or 0) / len(required) * 100)
+
+
+def _lookup_field_value(conn: sqlite3.Connection, company_name: str,
+                        company_key: str, field_key: str) -> str | None:
+    """从 research_fields 查找单个字段的最新非空值。"""
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "research_fields" not in tables:
+        return None
+    columns = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(research_fields)").fetchall()}
+    has_ckey = "company_key" in columns
+    clauses = ["LOWER(company_name)=LOWER(?)"]
+    params: list[object] = [company_name]
+    if has_ckey and company_key:
+        clauses.append("company_key=?")
+        params.append(company_key)
+    row = conn.execute(
+        f"SELECT field_value FROM research_fields "
+        f"WHERE ({' OR '.join(clauses)}) AND field_key=? "
+        f"AND field_value IS NOT NULL "
+        f"AND TRIM(CAST(field_value AS TEXT)) NOT IN ('', '暂缺') "
+        f"ORDER BY id DESC LIMIT 1",
+        [*params, field_key],
+    ).fetchone()
+    return str(row["field_value"]) if row else None
+
+
+def _scoring_from_research_fields(conn: sqlite3.Connection,
+                                   company_name: str, company_key: str) -> dict:
+    """从 research_fields 读取评分相关字段，构建 scoring payload."""
+    scoring_fields = [
+        "ai_model_dependency", "workflow_integration_level", "data_flywheel",
+        "proprietary_data_asset", "incumbent_direct_competitor",
+        "customer_segment_type", "funding_stage", "pricing_model",
+        "inference_cost_exposure", "stack_layer",
+    ]
+    payload: dict[str, object] = {}
+    for fk in scoring_fields:
+        v = _lookup_field_value(conn, company_name, company_key, fk)
+        payload[fk] = v or ""
+    # 数值评分字段默认 None
+    for fk in ("funding_stage_score", "score_defensibility",
+               "score_incumbent_attention", "score_value_capture"):
+        v = _lookup_field_value(conn, company_name, company_key, fk)
+        try:
+            payload[fk] = float(v) if v else None
+        except (ValueError, TypeError):
+            payload[fk] = None
+    return payload
 
 
 def _company_scoring_payload(row: sqlite3.Row | None) -> dict:

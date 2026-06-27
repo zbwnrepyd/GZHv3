@@ -88,7 +88,7 @@ def _load_chunks_from_db(
             rows = conn.execute(
                 """SELECT * FROM document_chunks
                    WHERE company_key=? AND is_noise=0
-                   AND (matched_fields LIKE ? OR matched_fields IS NULL)
+                   AND (matched_fields LIKE ? OR matched_fields IS NULL OR matched_fields = '')
                    ORDER BY final_score DESC
                    LIMIT ?""",
                 (company_key, f"%{field_key}%", limit),

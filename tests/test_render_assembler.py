@@ -107,6 +107,7 @@ def _setup_test_dbs():
         item_type TEXT NOT NULL,
         item_key TEXT NOT NULL,
         item_label TEXT,
+        display_role TEXT DEFAULT 'body',
         sort_order INTEGER DEFAULT 0,
         enabled INTEGER DEFAULT 1
     )''')

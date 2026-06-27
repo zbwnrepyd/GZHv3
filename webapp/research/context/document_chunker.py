@@ -42,6 +42,12 @@ _CHUNK_TYPE_KEYWORDS: list[tuple[str, list[str]]] = [
     ("hero", ["hero", "headline", "banner", "tagline", "slogan"]),
     ("about", ["about us", "about", "mission", "vision", "team", "culture",
                "关于我们", "使命", "愿景"]),
+    ("product_feature", ["feature", "features", "capabilities", "capability",
+                         "mode", "modes", "agent", "agents", "extension",
+                         "gateway", "integration", "workflow", "deploy",
+                         "orchestration", "产品功能", "核心功能",
+                         "功能", "特性", "能力", "代理", "扩展", "集成", "部署",
+                         "automation", "orchestrator", "pipeline", "skills"]),
     ("docs", ["documentation", "api reference", "developer guide",
               "getting started", "docs", "文档", "API"]),
     ("blog", ["blog", "article", "post", "published", "博客", "文章"]),
@@ -65,7 +71,7 @@ _CHUNK_TYPE_KEYWORDS: list[tuple[str, list[str]]] = [
 ]
 
 _NOISE_CHUNK_TYPES = {"boilerplate", "navigation", "footer", "cookie",
-                      "legal", "community_comment", "unknown"}
+                      "legal", "community_comment"}
 
 
 def _infer_chunk_type(text: str, source_type: str = "", title: str = "") -> str:

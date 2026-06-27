@@ -206,7 +206,7 @@ const TextFinalizePanel = {
   _isUsableValue(value) {
     if (value === null || value === undefined) return false;
     const s = String(value).trim();
-    return !['', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{}'].includes(s);
+    return !['', '暂缺', '待研究数据', 'None', 'none', 'null', 'NULL', '[]', '{}'].includes(s);
   },
 
   _bindRowEvents() {

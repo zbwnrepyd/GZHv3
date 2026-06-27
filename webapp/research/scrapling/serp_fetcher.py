@@ -33,6 +33,7 @@ def _fetch_serp_with_scrapling(url: str, timeout_seconds: int) -> FetchResult:
     Plain requests.get is blocked by search engines.  Scrapling's Fetcher
     uses curl-impersonate TLS fingerprints that pass bot detection.
     """
+    import os
     try:
         Fetcher = _get_fetcher_class()
     except ImportError as exc:
@@ -41,8 +42,14 @@ def _fetch_serp_with_scrapling(url: str, timeout_seconds: int) -> FetchResult:
             error=f"{exc}. Scrapling is optional; install with: pip install -r requirements-scrapling.txt",
         )
 
+    # Scrapling 0.4.x 废弃了环境变量自动检测代理，需要显式传 proxy 参数
+    proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
+    kwargs = {"timeout": timeout_seconds}
+    if proxy_url:
+        kwargs["proxy"] = proxy_url
+
     try:
-        page = Fetcher().get(url, timeout=timeout_seconds)
+        page = Fetcher().get(url, **kwargs)
     except Exception as exc:
         return FetchResult(
             url=url, html="", status="failed",

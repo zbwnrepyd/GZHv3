@@ -128,6 +128,36 @@ class TestEvidenceRanker(unittest.TestCase):
         self.assertIn("final_score", result)
         self.assertIn("is_noise", result)
 
+    def test_product_core_features_kilo_style_chunk(self):
+        """Kilo Features 风格的产品功能 chunk 应获得足够分数进入 LLM 上下文"""
+        chunk = self._make_chunk(
+            "Kilo provides multiple AI agent modes including single-agent solo, "
+            "multi-agent collaboration, and supervisor orchestration. "
+            "The platform features a Chrome extension for browser automation, "
+            "MCP gateway integration, and one-click cloud deployment. "
+            "Workflow builder supports drag-and-drop agent pipelines.",
+            source_type="official_site",
+            source_url="https://kilo.ai/features",
+            title="Kilo Features - AI Agent Platform",
+            chunk_type="product_feature",
+        )
+        result = score_chunk(
+            chunk, self.company_identity,
+            field_key="product_core_features",
+        )
+        self.assertGreaterEqual(
+            result["field_relevance_score"], 0.4,
+            f"field_relevance_score 应 >= 0.4，实际 {result['field_relevance_score']:.3f}"
+        )
+        self.assertEqual(
+            result["is_noise"], 0,
+            f"product_feature chunk 不应标记为噪音，实际 is_noise={result['is_noise']}"
+        )
+        self.assertGreaterEqual(
+            result["final_score"], 0.35,
+            f"final_score 应 >= 0.35，实际 {result['final_score']:.3f}"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,8 @@ _WEBAPP = Path(__file__).resolve().parent.parent
 if str(_WEBAPP) not in sys.path:
     sys.path.insert(0, str(_WEBAPP))
 
+from services.role_defaults import default_role_for_field, default_role_for_media
+
 # Private/operational metrics that default to 'unavailable' when no data exists
 _PRIVATE_METRIC_FIELDS = {
     'ltv', 'cac', 'ltv_cac_ratio', 'retention_rate', 'churn_rate',
@@ -27,7 +29,7 @@ _PRIVATE_METRIC_FIELDS = {
 }
 
 
-_PLACEHOLDER_VALUES = {'', '暂缺', 'None', 'none', 'null', 'NULL', '[]', '{}'}
+_PLACEHOLDER_VALUES = {'', '暂缺', '待研究数据', 'None', 'none', 'null', 'NULL', '[]', '{}'}
 
 
 # Status → confidence_level mapping
@@ -190,23 +192,29 @@ class RenderAssembler:
             card_id = row['card_id']
             # Load items for this card
             items_cur = comp_conn.execute('''
-                SELECT item_type, item_key, item_label
+                SELECT item_type, item_key, item_label, display_role
                 FROM card_items
                 WHERE company_name=? AND card_set_key=? AND card_id=? AND enabled=1
                 ORDER BY sort_order
             ''', (company_name, card_set, card_id))
             fields = []
             media = []
+            item_roles = {}
             for item in items_cur.fetchall():
+                item_key = item['item_key']
+                display_role = item['display_role'] or ''
                 if item['item_type'] == 'field':
-                    fields.append(item['item_key'])
+                    fields.append(item_key)
                 elif item['item_type'] == 'media':
-                    media.append(item['item_key'])
+                    media.append(item_key)
+                if display_role:
+                    item_roles[item_key] = display_role
             cards.append({
                 'card_id': card_id,
                 'title': row['card_title'],
                 'fields': fields,
                 'media': media,
+                'item_roles': item_roles,
                 'template_id': row['template_id'] or 'v3_default',
             })
         return cards
@@ -230,6 +238,7 @@ class RenderAssembler:
                 'title': row['card_title'],
                 'fields': config.get('fields', []),
                 'media': config.get('media', []),
+                'item_roles': {},
                 'template_id': config.get('template_id', 'v3_default'),
             })
         return cards
@@ -244,14 +253,19 @@ class RenderAssembler:
 
         # Resolve field values
         items = []
+        item_roles = card_def.get('item_roles', {})
         for field_key in fields:
             item = self._resolve_field(company_name, field_key)
+            if 'display_role' not in item:
+                item['display_role'] = item_roles.get(field_key) or default_role_for_field(field_key)
             items.append(item)
 
         # Resolve media
         media = []
         for asset_key in media_keys:
             m = self._resolve_media(company_name, asset_key)
+            if 'display_role' not in m:
+                m['display_role'] = item_roles.get(asset_key) or default_role_for_media(asset_key)
             media.append(m)
 
         return {

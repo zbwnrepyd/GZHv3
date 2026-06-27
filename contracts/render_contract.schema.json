@@ -32,6 +32,7 @@
               "required": ["field_key", "value", "status", "confidence", "evidence_count", "source"],
               "properties": {
                 "field_key": { "type": "string" },
+                "display_role": { "type": "string" },
                 "label": { "type": "string" },
                 "value": {},
                 "status": {
@@ -70,7 +71,8 @@
                   "type": "string",
                   "enum": ["ready", "fallback", "manual_needed", "unavailable", "not_applicable"]
                 },
-                "source": { "type": "string" }
+                "source": { "type": "string" },
+                "display_role": { "type": "string" }
               },
               "additionalProperties": false
             }

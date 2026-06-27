@@ -44,6 +44,8 @@ DEPRECATED_FIELD_NAMES = {
     "company_revenue",        # v1 遗留，标记 deprecated
     "company_profit",         # v1 遗留，标记 deprecated
     "other_products",         # v2 起废弃
+    # cold_start 已取消 deprecated（v3_card_07 仍使用）
+    "gtm_motion",             # v3 起废弃，由 gtm_strategy 替代
 }
 
 # v3 中已拆分/重命名的字段，新名称应在 manifest 中
@@ -273,6 +275,29 @@ class FieldContractTest(unittest.TestCase):
                 entry.get("resolution_type"),
                 f"v3 字段 '{fk}' 在 field_manifest 中缺少 resolution_type"
             )
+
+    def test_placeholder_values_include_daishu(self):
+        """"待研究数据" 应被识别为空/占位值，不作为可展示正文"""
+        import sys
+        sys.path.insert(0, str(ROOT / "webapp"))
+        from services.field_service import _is_usable_value
+        self.assertFalse(_is_usable_value("待研究数据"),
+                         '"待研究数据" 应被识别为不可用值')
+        self.assertFalse(_is_usable_value("暂缺"))
+        self.assertTrue(_is_usable_value("面向全球开发者社区"))
+        self.assertTrue(_is_usable_value("Kilo Code"))
+
+    def test_cold_start_not_deprecated(self):
+        """cold_start 在 fields.json 中不应标记为 deprecated"""
+        for group in self.fields_contract.get("groups", []):
+            for field in group.get("fields", []):
+                if field.get("field_key") == "cold_start":
+                    self.assertFalse(
+                        field.get("deprecated", False),
+                        "cold_start 仍在 v3 使用，不应标记 deprecated"
+                    )
+                    return
+        self.fail("cold_start 不在 fields.json 中")
 
 
 if __name__ == "__main__":

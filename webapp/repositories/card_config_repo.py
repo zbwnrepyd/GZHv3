@@ -1,8 +1,18 @@
 """卡片编排仓库 — card_compositions + card_items 数据访问（v2 支持套卡）"""
 from __future__ import annotations
 import json
+import os
+import sys
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
+
+# Allow importing from services/ sibling
+_WEBAPP = Path(__file__).resolve().parent.parent
+if str(_WEBAPP) not in sys.path:
+    sys.path.insert(0, str(_WEBAPP))
+
+from services.role_defaults import default_role_for_field, default_role_for_media
 
 
 @contextmanager
@@ -266,10 +276,10 @@ def init_company_set(composition_db: str, company_name: str,
         for i, fk in enumerate(fields):
             add_card_item(composition_db, company_name, card_id,
                           "field", fk, sort_order=i,
-                          display_role="body", card_set_key=set_key)
+                          display_role=default_role_for_field(fk), card_set_key=set_key)
         for i, mk in enumerate(media):
             add_card_item(composition_db, company_name, card_id,
                           "media", mk, sort_order=i,
-                          display_role="hero_image", card_set_key=set_key)
+                          display_role=default_role_for_media(mk), card_set_key=set_key)
         created += 1
     return created

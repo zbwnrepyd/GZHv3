@@ -69,6 +69,59 @@ _INFO_DENSITY_PATTERNS = [
     (r"\b(launch|release|announce|发布|上线|推出|开源|open\s*source)\b", 0.05),
 ]
 
+# ── 字段语义关键词 ──
+# 当 field_key 匹配时，注入语义相关关键词以提升 field_relevance_score
+_FIELD_SEMANTIC_KEYWORDS: dict[str, list[str]] = {
+    "product_core_features": [
+        "feature", "features", "capabilities", "capability",
+        "mode", "modes", "agent", "agents", "extension",
+        "gateway", "integration", "workflow", "deploy",
+        "orchestration", "automation", "orchestrator", "pipeline",
+        "产品功能", "核心功能", "功能", "特性", "能力",
+        "代理", "扩展", "集成", "部署",
+    ],
+    "main_product_name": [
+        "product", "product name", "main product", "flagship",
+        "产品名称", "主要产品", "核心产品",
+    ],
+    "pricing_summary": [
+        "pricing", "price", "plan", "subscription", "tier",
+        "free", "pro", "enterprise", "价格", "套餐", "订阅",
+    ],
+    "funding_info": [
+        "funding", "round", "investor", "raised", "valuation",
+        "series", "seed", "融资", "投资", "估值",
+    ],
+    "tech_stack": [
+        "tech stack", "technology", "framework", "database",
+        "infrastructure", "cloud", "技术栈", "框架", "数据库",
+    ],
+    "competitive_position": [
+        "competitor", "competitive", "advantage", "differentiator",
+        "market position", "竞争对手", "竞争优势", "差异化",
+    ],
+    "core_competency": [
+        "competency", "expertise", "specialization", "core strength",
+        "核心能力", "专长", "核心竞争力",
+    ],
+    "customer_segment": [
+        "customer", "segment", "target audience", "user base",
+        "enterprise", "SMB", "B2B", "B2C", "客户", "用户群",
+    ],
+    "company_achievements": [
+        "achievement", "milestone", "award", "recognition",
+        "achieved", "突破", "成就", "里程碑", "获奖",
+    ],
+    "founder_bg": [
+        "founder", "co-founder", "background", "education",
+        "previously", "former", "创始", "背景", "经历",
+    ],
+    "growth_metrics": [
+        "growth", "revenue", "ARR", "MRR", "revenue growth",
+        "用户增长", "同比增长", "增长率", "营收增长",
+    ],
+}
+
 
 def _compute_source_score(source_type: str, trust_tier: str = "") -> float:
     """计算来源权威度分数 (0–1)。"""
@@ -142,6 +195,12 @@ def _compute_field_relevance(
 
     # 额外关键词
     extra_keywords = [kw.lower() for kw in (keywords or []) if len(kw) >= 2]
+
+    # 注入字段语义关键词（提升特征匹配覆盖率）
+    if field_key and field_key in _FIELD_SEMANTIC_KEYWORDS:
+        semantic = [kw.lower() for kw in _FIELD_SEMANTIC_KEYWORDS[field_key] if len(kw) >= 2]
+        # 去重并保持顺序
+        extra_keywords = list(dict.fromkeys(extra_keywords + semantic))
 
     all_keywords = list(field_tokens) + extra_keywords
     if not all_keywords:

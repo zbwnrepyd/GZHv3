@@ -464,16 +464,16 @@ fields:
   # -- 传播钩子段落 --
   hook_paragraph_1:
     category: A
-    resolution_type: official_fact
-    if_missing: unavailable
+    resolution_type: llm_generated   # 改: 原为 official_fact
+    if_missing: draft                 # 改: 原为 unavailable
   hook_paragraph_2:
     category: A
-    resolution_type: official_fact
-    if_missing: unavailable
+    resolution_type: llm_generated
+    if_missing: draft
   hook_paragraph_3:
     category: A
-    resolution_type: official_fact
-    if_missing: unavailable
+    resolution_type: llm_generated
+    if_missing: draft
 
   # ── B 类：公式计算 ──
   mrr:

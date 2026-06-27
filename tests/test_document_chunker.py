@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'webapp'))
 
 from webapp.services.document_chunker import chunk, _estimate_tokens
+from webapp.research.context.document_chunker import _infer_chunk_type
 
 LONG_TEXT = "\n\n".join(
     [f"This is paragraph number {i} with some content that describes various "
@@ -46,3 +47,23 @@ class TestDocumentChunker:
         """Token estimate must be > 0 for non-empty text."""
         assert _estimate_tokens("Hello world") > 0
         assert _estimate_tokens("") == 0
+
+    def test_product_feature_keywords_match(self):
+        """Product feature keywords should map to chunk_type='product_feature'."""
+        text = (
+            "Our platform features include AI agent orchestration, "
+            "MCP gateway integration, and one-click deployment. "
+            "Core capabilities: multi-agent collaboration, "
+            "Chrome extension for browser automation."
+        )
+        ctype = _infer_chunk_type(text)
+        assert ctype == "product_feature", (
+            f"Expected 'product_feature' chunk_type, got '{ctype}'"
+        )
+
+    def test_unknown_no_longer_noise(self):
+        """unknown chunk_type should not be in _NOISE_CHUNK_TYPES."""
+        from webapp.research.context.document_chunker import _NOISE_CHUNK_TYPES
+        assert "unknown" not in _NOISE_CHUNK_TYPES, (
+            "unknown should not be auto-marked as noise"
+        )

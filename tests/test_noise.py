@@ -404,8 +404,9 @@ class TestDocumentChunkerNoiseTypes(unittest.TestCase):
         """确认 _NOISE_CHUNK_TYPES 包含所有预期的噪音类型"""
         expected_noise_types = {
             "boilerplate", "navigation", "footer", "cookie",
-            "legal", "community_comment", "unknown",
+            "legal", "community_comment",
         }
+        # unknown 不再默认 is_noise=1；低评分仍可通过 final_score 阈值过滤
         self.assertEqual(
             _NOISE_CHUNK_TYPES, expected_noise_types,
             f"Expected noise types {expected_noise_types}, got {_NOISE_CHUNK_TYPES}",

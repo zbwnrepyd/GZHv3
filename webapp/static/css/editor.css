@@ -676,6 +676,9 @@ input, button, select, textarea { font: inherit; }
   padding: 2px 4px; border-radius: 3px;
 }
 .cs-pool-item-row:hover { background: rgba(41,184,212,.04); }
+.cs-pool-item-row.selected { background: rgba(41,184,212,.12); }
+.cs-pool-item-row.used-by-other { background: rgba(41,184,212,.05); border-left: 3px solid rgba(41,184,212,.25); }
+.cs-pool-item-row.selected.used-by-other { background: rgba(41,184,212,.14); border-left: 3px solid rgba(41,184,212,.35); }
 .cs-role-select {
   font-size: 10px; padding: 2px 4px; border: 1px solid var(--border);
   border-radius: 3px; background: var(--surface-1); color: var(--text-muted);

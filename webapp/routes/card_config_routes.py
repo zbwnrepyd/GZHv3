@@ -96,7 +96,7 @@ def register(bp: Blueprint):
     def update_existing_card(company: str, card_id: str):
         try:
             data = request.get_json() or {}
-            set_key = data.get("card_set_key") or _get_set_key()
+            set_key = data.pop("card_set_key", None) or _get_set_key()
             ok = update_card(config.DB_PATH_COMPOSITION, company, card_id,
                            card_set_key=set_key, **data)
             if not ok:
@@ -171,7 +171,7 @@ def register(bp: Blueprint):
     def update_card_item_route(company: str, card_id: str, item_id: int):
         try:
             data = request.get_json() or {}
-            set_key = data.get("card_set_key") or _get_set_key()
+            set_key = data.pop("card_set_key", None) or _get_set_key()
             ok = update_card_item(config.DB_PATH_COMPOSITION, company, card_id,
                                  item_id, card_set_key=set_key, **data)
             if not ok:

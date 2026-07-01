@@ -73,22 +73,41 @@ const CardSettingsPanel = {
     ).join('');
   },
 
-  _renderPoolItem(type, key, label, existingItem) {
+  _renderPoolItem(type, key, label, existingItem, usedByOther) {
     const existingRole = existingItem?.display_role || '';
     const defaultRole = type === 'field'
       ? this._defaultRoleForField(key)
       : this._defaultRoleForMedia(key);
     const role = existingRole || defaultRole;
+    const cls = [
+      existingItem ? 'selected' : '',
+      usedByOther ? 'used-by-other' : '',
+    ].filter(Boolean).join(' ');
     return `
-      <div class="cs-pool-item-row">
+      <div class="cs-pool-item-row${cls ? ' ' + cls : ''}">
         <label class="cs-pool-item">
-          <input type="checkbox" value="${key}" ${existingItem ? 'checked' : ''}>
+          <input type="checkbox" value="${key}" ${existingItem ? 'checked' : ''}
+            onchange="this.closest('.cs-pool-item-row').classList.toggle('selected', this.checked)">
           ${this._esc(label)}
         </label>
         <select class="cs-role-select" data-type="${type}" data-key="${key}">
           ${this._roleOptions(role)}
         </select>
       </div>`;
+  },
+
+  /* 收集套卡内所有卡片已用的 field/media key */
+  _getUsedKeys(excludeCardId) {
+    const fields = new Set();
+    const media = new Set();
+    (this._cards || []).forEach(c => {
+      if (excludeCardId && c.card_id === excludeCardId) return;
+      (c.items || []).forEach(item => {
+        if (item.item_type === 'field') fields.add(item.item_key);
+        else if (item.item_type === 'media') media.add(item.item_key);
+      });
+    });
+    return { fields, media };
   },
 
   /* ── 渲染 ── */
@@ -143,6 +162,7 @@ const CardSettingsPanel = {
     const maxIdx = this._cards.reduce((m, c) => Math.max(m, c.card_index || 0), 0);
     const cardId = `card_${String(maxIdx + 1).padStart(2, '0')}`;
 
+    const used = this._getUsedKeys(null);
     editor.classList.remove('hidden');
     editor.innerHTML = `
       <h4>新增卡片</h4>
@@ -155,11 +175,11 @@ const CardSettingsPanel = {
       <div class="cs-pool-section">
         <h5>可选字段</h5>
         <div class="cs-pool-grid" id="cs-field-pool">
-          ${this._availableFields.map(f => this._renderPoolItem('field', f.field_key, f.field_label)).join('')}
+          ${this._availableFields.map(f => this._renderPoolItem('field', f.field_key, f.field_label, null, used.fields.has(f.field_key))).join('')}
         </div>
         <h5>可选图片</h5>
         <div class="cs-pool-grid" id="cs-media-pool">
-          ${this._availableMedia.map(m => this._renderPoolItem('media', m.media_key, m.label || m.media_key)).join('')}
+          ${this._availableMedia.map(m => this._renderPoolItem('media', m.media_key, m.label || m.media_key, null, used.media.has(m.media_key))).join('')}
         </div>
       </div>
       <div class="cs-form-actions">
@@ -226,6 +246,7 @@ const CardSettingsPanel = {
     const items = card.items || [];
     const fieldItems = items.filter(i => i.item_type === 'field');
     const mediaItems = items.filter(i => i.item_type === 'media');
+    const used = this._getUsedKeys(cardId);
 
     editor.classList.remove('hidden');
     editor.innerHTML = `
@@ -240,11 +261,11 @@ const CardSettingsPanel = {
       <div class="cs-pool-section">
         <h5>字段 <span style="font-weight:400;font-size:11px;color:var(--text-muted)">（勾选添加，取消移除，右侧选择角色）</span></h5>
         <div class="cs-pool-grid" id="cs-field-pool">
-          ${this._availableFields.map(f => this._renderPoolItem('field', f.field_key, f.field_label, fieldItems.find(i => i.item_key === f.field_key))).join('')}
+          ${this._availableFields.map(f => this._renderPoolItem('field', f.field_key, f.field_label, fieldItems.find(i => i.item_key === f.field_key), used.fields.has(f.field_key))).join('')}
         </div>
         <h5>图片 <span style="font-weight:400;font-size:11px;color:var(--text-muted)">（同上）</span></h5>
         <div class="cs-pool-grid" id="cs-media-pool">
-          ${this._availableMedia.map(m => this._renderPoolItem('media', m.media_key, m.label || m.media_key, mediaItems.find(i => i.item_key === m.media_key))).join('')}
+          ${this._availableMedia.map(m => this._renderPoolItem('media', m.media_key, m.label || m.media_key, mediaItems.find(i => i.item_key === m.media_key), used.media.has(m.media_key))).join('')}
         </div>
       </div>
       <div class="cs-form-actions">

@@ -1,0 +1,100 @@
+{
+  "card_set": "v4",
+  "cards": [
+    {
+      "card_id": "v4_card_01",
+      "title": "封面",
+      "fields": ["company_name", "company_type"],
+      "media": ["logo"]
+    },
+    {
+      "card_id": "v4_card_02",
+      "title": "赛道切口",
+      "fields": [
+        "market_track",
+        "market_subtrack",
+        "market_landscape_summary",
+        "market_landscape_top_players",
+        "market_size_value",
+        "market_size_currency",
+        "market_size_year",
+        "market_cagr",
+        "tam_value",
+        "tam_currency",
+        "tam_year",
+        "market_opportunity",
+        "company_def"
+      ],
+      "media": ["chart_competitive"]
+    },
+    {
+      "card_id": "v4_card_03",
+      "title": "公司基本面",
+      "fields": [
+        "main_product_name",
+        "founded_date",
+        "location",
+        "founder_name",
+        "founder_bg",
+        "founder_achievement",
+        "funding_stage",
+        "funding_info",
+        "company_achievements",
+        "team_size",
+        "team_highlight"
+      ],
+      "media": ["founder_photo"]
+    },
+    {
+      "card_id": "v4_card_04",
+      "title": "产品与价值主张",
+      "fields": [
+        "core_business",
+        "main_product_highlight",
+        "other_products",
+        "product_pain_points"
+      ],
+      "media": ["product_main"]
+    },
+    {
+      "card_id": "v4_card_05",
+      "title": "竞争壁垒与生态位",
+      "fields": [
+        "competitive_position",
+        "core_competency",
+        "moat",
+        "ecosystem_niche",
+        "switching_cost",
+        "workflow_integration_level"
+      ],
+      "media": ["chart_ecosystem"]
+    },
+    {
+      "card_id": "v4_card_06",
+      "title": "商业模式与定价",
+      "fields": [
+        "revenue_model",
+        "pricing_model",
+        "pricing_summary",
+        "pricing_strategy",
+        "cost_advantage",
+        "inference_cost_exposure"
+      ],
+      "media": []
+    },
+    {
+      "card_id": "v4_card_07",
+      "title": "增长飞轮与关键指标",
+      "fields": [
+        "gtm_motion",
+        "gtm_strategy",
+        "acquisition_channels",
+        "growth_metrics",
+        "mau",
+        "customer_segment",
+        "growth_flywheel"
+      ],
+      "media": ["flywheel"]
+    }
+  ]
+}

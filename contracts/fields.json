@@ -48,7 +48,7 @@
       "group_key": "product",
       "group_label": "产品",
       "fields": [
-        {"field_key": "main_product_name", "field_label": "主产品名", "type": "text"},
+        {"field_key": "main_product_name", "field_label": "主产品名", "type": "text", "required": true},
         {"field_key": "main_product_def", "field_label": "产品定义", "type": "long_text"},
         {"field_key": "main_product_highlight", "field_label": "亮点功能", "type": "long_text"},
         {"field_key": "main_product_achievement", "field_label": "产品成绩", "type": "long_text"},
@@ -61,7 +61,7 @@
       "group_label": "商业模式",
       "fields": [
         {"field_key": "revenue_model", "field_label": "盈利方式", "type": "long_text"},
-        {"field_key": "gtm_strategy", "field_label": "GTM 与增长策略", "type": "long_text"},
+        {"field_key": "gtm_strategy", "field_label": "GTM 与增长策略", "type": "long_text", "required": true},
         {"field_key": "cold_start", "field_label": "冷启动策略", "type": "long_text"},
         {"field_key": "customer_segment", "field_label": "客户细分", "type": "text"},
         {"field_key": "growth_flywheel", "field_label": "增长飞轮", "type": "long_text"},
@@ -164,7 +164,7 @@
       "group_key": "company_profile",
       "group_label": "公司概况（v3）",
       "fields": [
-        {"field_key": "founded_date", "field_label": "成立时间", "type": "text", "required": false},
+        {"field_key": "founded_date", "field_label": "成立时间", "type": "text", "required": true},
         {"field_key": "core_business", "field_label": "主营业务", "type": "long_text", "required": true},
         {"field_key": "core_competency", "field_label": "核心竞争优势", "type": "long_text", "required": false},
         {"field_key": "funding_rounds", "field_label": "融资轮次（结构化）", "type": "json_text", "required": false},
@@ -184,7 +184,7 @@
         {"field_key": "mau", "field_label": "月活跃用户", "type": "number", "required": false},
         {"field_key": "mau_as_of", "field_label": "MAU 统计周期", "type": "text", "required": false},
         {"field_key": "retention_definition", "field_label": "留存率口径说明", "type": "text", "required": false},
-        {"field_key": "pricing_summary", "field_label": "定价摘要", "type": "long_text", "required": false},
+        {"field_key": "pricing_summary", "field_label": "定价摘要", "type": "long_text", "required": true},
         {"field_key": "pricing_tiers", "field_label": "定价梯度明细", "type": "json_text", "required": false}
       ]
     },
@@ -192,7 +192,7 @@
       "group_key": "customer",
       "group_label": "客户证据（v3）",
       "fields": [
-        {"field_key": "customer_names", "field_label": "具体客户名称", "type": "json_text", "required": false},
+        {"field_key": "customer_names", "field_label": "具体客户名称", "type": "json_text", "required": true},
         {"field_key": "customer_selection_reasons", "field_label": "客户选择理由", "type": "long_text", "required": false},
         {"field_key": "customer_choice_evidence", "field_label": "客户选择证据明细", "type": "json_text", "required": false}
       ]

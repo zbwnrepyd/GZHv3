@@ -53,7 +53,12 @@ INSERT OR IGNORE INTO card_set_registry
 VALUES
     ('v1', '套卡1 · 经典8张', 'v1', 8, 1),
     ('v2', '套卡2 · 新版7张', 'v2', 7, 1),
-    ('v3', '套卡3 · 研究增强版', 'v3', 8, 1);
+    ('v3', '套卡3 · 研究增强版', 'v3', 8, 1),
+    ('v4', '套卡4 · 故事线7张', 'v4', 7, 1);
+
+UPDATE card_set_registry
+SET display_name='套卡4 · 故事线7张', spec_version='v4', card_count=7, is_system=1
+WHERE set_key='v4';
 
 -- 默认卡片配置（v2: 加 set_key，UNIQUE 约束改为 (set_key, card_id)）
 CREATE TABLE IF NOT EXISTS default_card_configs (
@@ -99,3 +104,13 @@ INSERT OR REPLACE INTO default_card_configs (set_key, card_id, card_index, card_
 ('v3','v3_card_06',6,'公司能力分析','{"fields":["ecosystem_niche","revenue_model","pricing_strategy","ltv","cac","ltv_cac_ratio","ltv_cac_is_benchmark","ltv_cac_benchmark_source"],"media":["chart_ecosystem"],"template_id":"capability_v3"}'),
 ('v3','v3_card_07',7,'增长与GTM','{"fields":["growth_strategy","cold_start","gtm_strategy","growth_flywheel","acquisition_channels"],"media":["flywheel"],"template_id":"gtm_growth_v3"}'),
 ('v3','v3_card_08',8,'竞争态势','{"fields":["competitors_top3","competitive_position","differentiated_opportunity","competitive_advantages"],"media":["chart_competitive"],"template_id":"competition_v3"}');
+
+-- v4 套卡的 7 张默认配置：v3 首页 + 故事线逻辑（Who → What → Where → Why Win → Money → Growth）
+INSERT OR REPLACE INTO default_card_configs (set_key, card_id, card_index, card_title, config_json) VALUES
+('v4','v4_card_01',1,'封面','{"fields":["company_name","company_type"],"media":["logo"],"template_id":"cover_ai_observation_v4"}'),
+('v4','v4_card_02',2,'赛道切口','{"fields":["market_track","market_subtrack","market_landscape_summary","market_landscape_top_players","market_size_value","market_size_currency","market_size_year","market_cagr","tam_value","tam_currency","tam_year","market_opportunity","company_def"],"media":["chart_competitive"],"template_id":"storyline_market_v4"}'),
+('v4','v4_card_03',3,'公司基本面','{"fields":["main_product_name","founded_date","location","founder_name","founder_bg","founder_achievement","funding_stage","funding_info","company_achievements","team_size","team_highlight"],"media":["founder_photo"],"template_id":"storyline_fundamentals_v4"}'),
+('v4','v4_card_04',4,'产品与价值主张','{"fields":["core_business","main_product_highlight","other_products","product_pain_points"],"media":["product_main"],"template_id":"storyline_product_v4"}'),
+('v4','v4_card_05',5,'竞争壁垒与生态位','{"fields":["competitive_position","core_competency","moat","ecosystem_niche","switching_cost","workflow_integration_level"],"media":["chart_ecosystem"],"template_id":"storyline_moat_v4"}'),
+('v4','v4_card_06',6,'商业模式与定价','{"fields":["revenue_model","pricing_model","pricing_summary","pricing_strategy","cost_advantage","inference_cost_exposure"],"media":[],"template_id":"storyline_business_model_v4"}'),
+('v4','v4_card_07',7,'增长飞轮与关键指标','{"fields":["gtm_motion","gtm_strategy","acquisition_channels","growth_metrics","mau","customer_segment","growth_flywheel"],"media":["flywheel"],"template_id":"storyline_growth_v4"}');

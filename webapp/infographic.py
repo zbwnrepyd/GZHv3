@@ -557,6 +557,34 @@ def _get_stack_title(company_name: str, layer: str, vc: float) -> str:
     return f"{company_name}：{layer} / {level}"
 
 
+def _build_focus_lane_layout(focus_index: int) -> tuple[dict[int, float], list[dict]]:
+    """Return compressed y centers and continuous bands without background gaps."""
+    other_height = 0.55
+    focus_height = 1.4
+    start = float(focus_index) - focus_height / 2 - focus_index * other_height
+    centers: dict[int, float] = {}
+    bands = []
+    cursor = start
+    for i, label in enumerate(_STACK_LANE_LABELS):
+        height = focus_height if i == focus_index else other_height
+        band_start = round(cursor, 3)
+        band_end = round(cursor + height, 3)
+        center = round((band_start + band_end) / 2, 3)
+        centers[i] = center
+        color = "rgba(41,184,212,0.10)" if i == focus_index else "rgba(148,163,184,0.40)"
+        bands.append({
+            "lane": label,
+            "center": center,
+            "start": band_start,
+            "end": band_end,
+            "height": height,
+            "is_focus": i == focus_index,
+            "color": color,
+        })
+        cursor = band_end
+    return centers, bands
+
+
 def _build_competitive_landscape_html(
     companies: list[dict], highlight: str,
     params: dict | None = None,
@@ -783,6 +811,9 @@ def _build_ecosystem_positioning_html(
     t_size = int(p.get("title_size") or 20)
     a_size = int(p.get("axis_size") or 13)
     l_size = int(p.get("label_size") or 12)
+    title_font_size = t_size * 2
+    axis_font_size = a_size * 2
+    label_font_size = l_size * 2
     theme = p.get("theme", "light")
     max_cos = int(p.get("max_companies", 8))
 
@@ -802,6 +833,21 @@ def _build_ecosystem_positioning_html(
     ]
     domain = _point_priority(domain, highlight, max_cos)
 
+    focus_li = 1
+    highlight_key = highlight.strip().lower()
+    for c in domain:
+        if (c.get("company_name") or "").strip().lower() == highlight_key:
+            focus_layer = _map_stack_layer(c.get("stack_layer"))
+            focus_li = lane_index.get(focus_layer, 1)
+            break
+    lane_centers, lane_bands = _build_focus_lane_layout(focus_li)
+    lane_label_map = {
+        f"{band['center']:.1f}": band["lane"]
+        for band in lane_bands
+    }
+    y_min = lane_bands[0]["start"] if lane_bands else -0.5
+    y_max = lane_bands[-1]["end"] if lane_bands else 4.5
+
     # -- 按泳道分组，同泳道内按 X 排序后加 Y 偏移（垂直错开防重叠）--
     lane_groups: dict[int, list[dict]] = {}
     for c in domain:
@@ -812,27 +858,51 @@ def _build_ecosystem_positioning_html(
     points = []
     for li, group in lane_groups.items():
         group.sort(key=lambda c: _score(c.get("score_value_capture")))
-        n_lane = len(group)
+        non_highlight = [
+            c for c in group
+            if (c.get("company_name") or "").strip().lower() != highlight_key
+        ]
+        non_highlight_index = {
+            id(c): idx for idx, c in enumerate(non_highlight)
+        }
+        n_other = len(non_highlight)
         for j, c in enumerate(group):
             n = str(c.get("display_name") or c.get("company_name") or "")
             sx_raw = _score(c.get("score_value_capture"))
             is_hi = (c.get("company_name") or "").strip().lower() == highlight.strip().lower()
-            # 同泳道垂直错开：居中 + 均匀散布在泳道带内
-            if n_lane == 1:
-                y_val = float(li)
+            base_y = lane_centers.get(li, float(li))
+            if is_hi or n_other == 0:
+                y_val = base_y
             else:
-                y_val = li + (j - (n_lane - 1) / 2) * (0.7 / n_lane)
+                span = 0.34 if li != focus_li else 0.62
+                idx = non_highlight_index[id(c)]
+                y_val = base_y + (idx - (n_other - 1) / 2) * (span / max(n_other, 1))
             points.append({
                 "name": n,
-                "value": [sx_raw, y_val],
+                "value": [sx_raw, round(y_val, 3)],
                 "is_highlight": is_hi,
+                "lane": _STACK_LANE_LABELS[li],
+                "raw_lane_index": li,
             })
 
     # -- 动态标题 --
     target = _find_highlight_point(points, highlight)
+    for idx, point in enumerate(points):
+        if point.get("is_highlight"):
+            point["label"] = {"position": "right", "distance": 14}
+            continue
+        if point.get("raw_lane_index") == focus_li:
+            # 焦点泳道内，竞品标签放到点左侧，避免压住目标公司标签。
+            point["label"] = {"position": "left", "distance": 14}
+        else:
+            label_position = "top" if point.get("raw_lane_index", focus_li) < focus_li else "bottom"
+            point["label"] = {
+                "position": label_position,
+                "distance": 12,
+            }
     if target:
         vc = target["value"][0]
-        layer_name = _STACK_LANE_LABELS[int(round(target["value"][1]))]
+        layer_name = target.get("lane") or _STACK_LANE_LABELS[focus_li]
         title_text = _get_stack_title(target["name"], layer_name, vc)
     else:
         title_text = p.get("title", "AI 栈生态位图")
@@ -842,6 +912,12 @@ def _build_ecosystem_positioning_html(
     other_points = [p for p in points if not p.get("is_highlight")]
     target_json = json.dumps(target_points, ensure_ascii=False)
     other_json = json.dumps(other_points, ensure_ascii=False)
+    lane_label_map_json = json.dumps(lane_label_map, ensure_ascii=False)
+    lane_bands_json = json.dumps(lane_bands, ensure_ascii=False)
+    lane_labels_json = json.dumps([
+        {"name": band["lane"], "center": band["center"], "is_focus": band["is_focus"]}
+        for band in lane_bands
+    ], ensure_ascii=False)
 
     no_data = not points
     title_json = json.dumps(title_text, ensure_ascii=False)
@@ -853,20 +929,20 @@ def _build_ecosystem_positioning_html(
         'symbolSize:12,'
         'itemStyle:{color:"rgba(27,42,74,0.30)",opacity:0.65,borderColor:"transparent",borderWidth:0},'
         'label:{show:true,formatter:function(p){return p.data?p.data.name:"";},'
-        'fontSize:' + str(l_size) + ',fontWeight:"bold",color:"#1B2A4A",'
-        'backgroundColor:"rgba(255,255,255,0.92)",borderRadius:4,padding:[3,6],'
-        'position:"right",distance:10,'
-        'labelLayout:{hideOverlap:true,moveOverlap:"shiftY"}},'
+        'fontSize:' + str(label_font_size) + ',fontWeight:"bold",color:"#1B2A4A",'
+        'backgroundColor:"#FFFFFF",borderRadius:4,padding:[3,6],'
+        'position:"right",distance:10},'
+        'labelLayout:{hideOverlap:true,moveOverlap:"shiftY"},'
         '},{'
         'name:"目标公司",type:"scatter",data:' + target_json + ','
         'symbolSize:22,'
         'itemStyle:{color:"' + accent + '",opacity:1,borderColor:"#FFFFFF",borderWidth:2},'
         'z:10,'
         'label:{show:true,formatter:function(p){return p.data?p.data.name:"";},'
-        'fontSize:' + str(l_size) + ',fontWeight:"bold",color:"#1B2A4A",'
-        'backgroundColor:"rgba(255,255,255,0.92)",borderRadius:4,padding:[3,6],'
-        'position:"right",distance:10,'
-        'labelLayout:{hideOverlap:true,moveOverlap:"shiftY"}},'
+        'fontSize:' + str(label_font_size) + ',fontWeight:"bold",color:"#1B2A4A",'
+        'backgroundColor:"#FFFFFF",borderRadius:4,padding:[3,6],'
+        'position:"right",distance:10},'
+        'labelLayout:{hideOverlap:true,moveOverlap:"shiftY"},'
         'markArea:{'
         'silent:true,'
         'data:[[{xAxis:7},{xAxis:10}]],'
@@ -880,10 +956,10 @@ def _build_ecosystem_positioning_html(
         'xAxis:{'
         'type:"value",min:0,max:10,scale:false,boundaryGap:false,'
         'name:"变现能力 →",nameLocation:"middle",nameGap:36,'
-        'nameTextStyle:{color:"' + text_color + '",fontSize:18,fontWeight:"bold"},'
+        'nameTextStyle:{color:"' + text_color + '",fontSize:' + str(axis_font_size) + ',fontWeight:"bold"},'
         'axisLine:{lineStyle:{color:"' + line_color + '",width:1.5}},'
         'axisLabel:{'
-        'color:"' + muted + '",fontSize:' + str(a_size) + ','
+        'color:"' + muted + '",fontSize:' + str(axis_font_size) + ','
         'formatter:function(v){if(v===0)return"低";if(v===5)return"中";if(v===10)return"高";return"";}'
         '},'
         'splitLine:{lineStyle:{color:"' + line_color + '",type:"dashed"}},'
@@ -894,35 +970,28 @@ def _build_ecosystem_positioning_html(
     # yAxis — value 轴，自定义标签为泳道名（+ 交替背景 + 分隔线放 extra series）
     yaxis_js = (
         'yAxis:{'
-        'type:"value",min:-0.5,max:4.5,interval:1,inverse:true,'
+        'type:"value",min:' + str(y_min) + ',max:' + str(y_max) + ',interval:0.5,inverse:true,'
         'axisLine:{lineStyle:{color:"' + line_color + '",width:1.5}},'
-        'axisLabel:{color:"' + text_color + '",fontSize:13,fontWeight:700,'
-        '  formatter:function(v){var lanes=' + json.dumps(_STACK_LANE_LABELS, ensure_ascii=False) + ';return lanes[Math.round(v)]||"";}},'
+        'axisLabel:{show:false},'
         'splitLine:{show:false},'
         '},'
     )
 
-    # 泳道交替背景 + 泳道分隔线（放在额外 series 上）
-    alt_bands = []
-    for i in range(5):
-        if i % 2 == 1:
-            alt_bands.append(
-                '[{yAxis:' + str(i - 0.5) + '},{yAxis:' + str(i + 0.5) + '}],'
-            )
-    alt_bands_js = '[' + ''.join(alt_bands) + ']'
+    # 焦点泳道高亮；其他泳道底色 40% 灰，并按 50% 高度绘制。
     lane_extra = (
-        'markArea:{silent:true,data:' + alt_bands_js + ','
-        'itemStyle:{color:"rgba(27,42,74,0.04)"}},'
+        'markArea:{silent:true,data:laneBands.map(function(b){return '
+        '[{xAxis:0,yAxis:b.start,itemStyle:{color:b.color}},{xAxis:10,yAxis:b.end}];})},'
         'markLine:{silent:true,symbol:"none",'
         'lineStyle:{color:"' + line_color + '",type:"solid",width:1},'
-        'data:[{yAxis:0.5},{yAxis:1.5},{yAxis:2.5},{yAxis:3.5}]},'
+        'label:{show:false},'
+        'data:laneBands.flatMap(function(b){return [{yAxis:b.start},{yAxis:b.end}];})},'
     )
 
-    grid_js = 'grid:{left:110,right:40,top:72,bottom:72},'
+    grid_js = 'grid:{left:170,right:40,top:92,bottom:92},'
 
     title_js = (
         'title:{text:' + title_json + ',left:24,top:18,'
-        'textStyle:{color:"' + text_color + '",fontSize:' + str(t_size) + ',fontWeight:"bold"}},'
+        'textStyle:{color:"' + text_color + '",fontSize:' + str(title_font_size) + ',fontWeight:"bold"}},'
     )
 
     if no_data:
@@ -941,6 +1010,9 @@ def _build_ecosystem_positioning_html(
     result += '<div id="chart-frame"><div id="chart"></div></div>\n'
     result += _echarts_script_tag() + '\n<script>\n'
     result += series_js + '\n\n'
+    result += 'var focusLaneIndex=' + str(focus_li) + ';\n'
+    result += 'var laneBands=' + lane_bands_json + ';\n'
+    result += 'var laneLabels=' + lane_labels_json + ';\n'
     result += 'var opt={\n'
     result += '  animation:false,\n'
     result += '  backgroundColor:"' + bg + '",\n'
@@ -948,8 +1020,7 @@ def _build_ecosystem_positioning_html(
     result += '  tooltip:{trigger:"item",\n'
     result += '    formatter:function(p){\n'
     result += '      var d=p.data||{};\n'
-    result += '      var lanes=' + json.dumps(_STACK_LANE_LABELS, ensure_ascii=False) + ';\n'
-    result += '      var layerName=lanes[Math.round(p.value[1])]||"";\n'
+    result += '      var layerName=d.lane||"";\n'
     result += '      return "<b>"+d.name+"</b><br/>"\n'
     result += '        +"层级："+layerName+"<br/>"\n'
     result += '        +"变现能力："+(d.value[0]!=null?d.value[0].toFixed(1)+" / 10":"-");\n'
@@ -963,9 +1034,34 @@ def _build_ecosystem_positioning_html(
     result += '  ' + graphic_js + '\n'
     result += '};\n'
     # 额外 series 承载泳道交替背景 + 分隔线
-    result += 'opt.series.push({type:"scatter",data:[],' + lane_extra + '});\n'
+    result += 'opt.series.push({type:"scatter",data:[],z:-10,' + lane_extra + '});\n'
     result += "var chart=echarts.init(document.getElementById('chart'));\n"
     result += "chart.setOption(opt);\n"
+    result += """
+function applyLaneLabels(){
+  var labels = laneLabels.map(function(b){
+    var point = chart.convertToPixel({xAxisIndex:0,yAxisIndex:0}, [0, b.center]);
+    return {
+      id:"lane-label-"+b.name,
+      type:"text",
+      left:18,
+      top:point[1]-13,
+      style:{
+        text:b.name,
+        fill:"#1B2A4A",
+        fontSize:""" + str(label_font_size) + """,
+        fontWeight:900,
+        textAlign:"right",
+        textVerticalAlign:"middle"
+      }
+    };
+  });
+  chart.setOption({graphic: labels});
+}
+applyLaneLabels();
+chart.on("finished", applyLaneLabels);
+window.addEventListener("resize", applyLaneLabels);
+"""
     result += _echarts_fit_script("chart", width, height) + '\n'
     result += "</script></body></html>"
 

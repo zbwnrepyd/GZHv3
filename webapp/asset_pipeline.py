@@ -402,7 +402,7 @@ def collect_logo(db_path: str, images_root: str, company_name: str,
     from asset_store import insert_variant, select_variant
     from PIL import Image
 
-    dest_dir = asset_dir(images_root, company_name)
+    dest_dir = asset_dir(images_root, company_name, company_key=company_key)
     os.makedirs(dest_dir, exist_ok=True)
 
     def _image_size(path):
@@ -2172,7 +2172,10 @@ def _collect_founder_photo_variants(
                 if img_url in used_urls:
                     continue
                 used_urls.add(img_url)
-                dest = _variant_path(images_root, company_name, "founder_photo", f"tv_{int(time.time())}_{i}")
+                dest = _variant_path(
+                    images_root, company_name, "founder_photo",
+                    f"tv_{int(time.time())}_{i}", company_key=company_key,
+                )
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if not _download(img_url, dest, timeout=30):
                     continue
@@ -2186,6 +2189,7 @@ def _collect_founder_photo_variants(
                     db_path, company_name, "founder_photo", dest,
                     "web_tavily", source_url=img_url, source_page=img_url,
                     prompt=query, meta={"query": query, "tier": 1},
+                    company_key=company_key,
                 ):
                     accepted += 1
         except Exception:
@@ -2200,7 +2204,10 @@ def _collect_founder_photo_variants(
                 if not src or src in used_urls:
                     continue
                 used_urls.add(src)
-                dest = _variant_path(images_root, company_name, "founder_photo", f"about_{int(time.time())}_{j}")
+                dest = _variant_path(
+                    images_root, company_name, "founder_photo",
+                    f"about_{int(time.time())}_{j}", company_key=company_key,
+                )
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if not _download(src, dest, timeout=30, referer=about_url):
                     continue
@@ -2214,6 +2221,7 @@ def _collect_founder_photo_variants(
                     db_path, company_name, "founder_photo", dest,
                     "playwright", source_url=src, source_page=about_url,
                     prompt=f"About page: {about_url}", meta={"tier": 2, "source_page": about_url},
+                    company_key=company_key,
                 ):
                     accepted += 1
         except Exception:

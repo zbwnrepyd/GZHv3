@@ -39,6 +39,7 @@ import re
 import time
 import uuid
 import threading
+import ast
 from pathlib import Path
 
 app = Flask(__name__)
@@ -256,7 +257,7 @@ def get_research_card_markdown(company: str, card_index: int):
     version = request.args.get("version", "standard")
     if version not in ("standard", "business", "spread"):
         return jsonify({"error": f"无效的版本: {version}"}), 400
-    set_key = request.args.get("set", "v1")
+    set_key = request.args.get("set", config.DEFAULT_CARD_SET_KEY)
     try:
         markdown = markdown_builder.build_card_markdown(
             config.DB_PATH_RESEARCH, company, card_index, version,
@@ -719,6 +720,186 @@ def _parse_competitor_names(raw: str | None) -> list[str]:
     return uniq
 
 
+def _parse_competitor_items(*raw_values: str | None) -> list[dict]:
+    """Parse competitor lists from JSON or Python-literal text."""
+    for raw in raw_values:
+        if not raw:
+            continue
+        raw_s = str(raw).strip()
+        if not raw_s:
+            continue
+        parsed = None
+        try:
+            parsed = json.loads(raw_s)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(raw_s)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, list):
+            items = []
+            for idx, item in enumerate(parsed):
+                if isinstance(item, dict):
+                    name = str(item.get("name") or item.get("company_name") or "").strip()
+                    if name:
+                        merged = dict(item)
+                        merged.setdefault("rank", idx + 1)
+                        items.append(merged)
+                else:
+                    name = str(item).strip()
+                    if name:
+                        items.append({"name": name, "rank": idx + 1})
+            if items:
+                return items
+    return []
+
+
+_STACK_LAYER_ALIASES = {
+    "vertical_app": "vertical_app",
+    "application": "vertical_app",
+    "app": "vertical_app",
+    "应用层": "vertical_app",
+    "垂直应用": "vertical_app",
+    "distribution": "distribution",
+    "channel": "distribution",
+    "分发渠道": "distribution",
+    "分发层": "distribution",
+    "middleware": "middleware",
+    "mw": "middleware",
+    "中间件": "middleware",
+    "中间件层": "middleware",
+    "foundation_model": "foundation_model",
+    "model": "foundation_model",
+    "model_layer": "foundation_model",
+    "模型层": "foundation_model",
+    "基础模型": "foundation_model",
+    "infrastructure": "infrastructure",
+    "infra": "infrastructure",
+    "基础设施": "infrastructure",
+    "基础设施层": "infrastructure",
+}
+
+
+def _canonical_stack_layer(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _STACK_LAYER_ALIASES.get(text) or _STACK_LAYER_ALIASES.get(text.lower())
+
+
+def _infer_stack_layer_from_text(*values: object) -> str | None:
+    text = " ".join(str(v or "") for v in values).lower()
+    if not text.strip():
+        return None
+
+    keyword_groups = [
+        ("middleware", [
+            "middleware", "中间件", "编排", "orchestrat", "中台", "gateway",
+            "网关", "路由", "连接模型", "模型与", "模型和", "agent 平台", "代理平台",
+        ]),
+        ("foundation_model", [
+            "foundation model", "model layer", "模型层", "基础模型", "大模型",
+            "llm provider", "模型提供商", "核心智能能力",
+        ]),
+        ("infrastructure", [
+            "infrastructure", "infra", "基础设施", "算力", "gpu", "云平台",
+            "数据平台", "向量数据库", "底层平台",
+        ]),
+        ("distribution", [
+            "distribution", "channel", "分发", "渠道", "入口", "插件市场",
+            "marketplace", "聚合平台",
+        ]),
+        ("vertical_app", [
+            "vertical app", "垂直应用", "应用层", "面向终端用户", "终端用户",
+            "业务场景", "工作流应用",
+        ]),
+    ]
+    scores: dict[str, int] = {}
+    for layer, keywords in keyword_groups:
+        scores[layer] = sum(1 for kw in keywords if kw in text)
+    best_layer, best_score = max(scores.items(), key=lambda item: item[1])
+    return best_layer if best_score > 0 else None
+
+
+def _resolve_stack_layer_for_chart(row: dict) -> str:
+    explicit = _canonical_stack_layer(row.get("stack_layer"))
+    inferred = _infer_stack_layer_from_text(
+        row.get("ecosystem_niche"),
+        row.get("ecosystem_positioning"),
+        row.get("main_product_def"),
+        row.get("main_product_highlight"),
+    )
+    if inferred and (explicit in (None, "vertical_app") or inferred != "vertical_app"):
+        return inferred
+    return explicit or inferred or "vertical_app"
+
+
+def _load_chart_target_from_research_fields(
+    research_db_path: str,
+    target_company: str,
+    version: str,
+) -> dict | None:
+    """Build a chart row from normalized research_fields when wide research is absent."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(research_db_path)
+        conn.row_factory = sqlite3.Row
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='research_fields'"
+        ).fetchone()
+        if not exists:
+            conn.close()
+            return None
+        rows = conn.execute(
+            """
+            SELECT rf.company_name, rf.company_key, rf.field_key, rf.field_value
+            FROM research_fields rf
+            JOIN (
+                SELECT field_key, MAX(id) AS max_id
+                FROM research_fields
+                WHERE version=?
+                  AND (LOWER(company_name)=LOWER(?) OR LOWER(company_key)=LOWER(?))
+                GROUP BY field_key
+            ) latest ON latest.max_id = rf.id
+            ORDER BY rf.id
+            """,
+            (version, target_company, target_company),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    values = {r["field_key"]: r["field_value"] for r in rows}
+    first = rows[0]
+
+    def _num(field_key: str):
+        raw = values.get(field_key)
+        try:
+            return float(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    company_name = (values.get("company_name") or first["company_name"] or target_company).strip()
+    return {
+        "company_name": company_name,
+        "display_name": company_name,
+        "company_key": first["company_key"] or company_name.lower(),
+        "competitors": values.get("competitors") or values.get("market_landscape_top_players") or "",
+        "competitors_top3": values.get("competitors_top3") or "",
+        "market_landscape_top_players": values.get("market_landscape_top_players") or "",
+        "score_defensibility": _num("score_defensibility"),
+        "score_incumbent_attention": _num("score_incumbent_attention"),
+        "score_value_capture": _num("score_value_capture"),
+        "funding_stage_score": _num("funding_stage_score"),
+        "stack_layer": values.get("stack_layer") or "",
+        "ecosystem_niche": values.get("ecosystem_niche") or "",
+        "ecosystem_positioning": values.get("ecosystem_positioning") or "",
+    }
+
+
 def _load_chart_company_domain(
     research_db_path: str,
     target_company: str,
@@ -751,6 +932,10 @@ def _load_chart_company_domain(
         if row:
             target_row = dict(row)
     if not target_row:
+        target_row = _load_chart_target_from_research_fields(
+            research_db_path, target_company, version
+        )
+    if not target_row:
         return []
 
     target_name = (target_row.get("company_name") or target_company).strip()
@@ -770,6 +955,17 @@ def _load_chart_company_domain(
 
     conn = sqlite3.connect(research_db_path)
     conn.row_factory = sqlite3.Row
+    research_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(research)").fetchall()
+    }
+    ecosystem_niche_select = (
+        "ecosystem_niche" if "ecosystem_niche" in research_columns else "NULL AS ecosystem_niche"
+    )
+    ecosystem_positioning_select = (
+        "ecosystem_positioning"
+        if "ecosystem_positioning" in research_columns
+        else "NULL AS ecosystem_positioning"
+    )
     placeholders = ",".join("?" for _ in ordered_lower_names)
     rows = conn.execute(
         f"""
@@ -782,7 +978,9 @@ def _load_chart_company_domain(
           score_incumbent_attention,
           score_value_capture,
           funding_stage_score,
-          stack_layer
+          stack_layer,
+          {ecosystem_niche_select},
+          {ecosystem_positioning_select}
         FROM research
         WHERE version = ?
           AND id IN (
@@ -799,60 +997,91 @@ def _load_chart_company_domain(
 
     items = [dict(r) for r in rows]
 
+    matched_names = {str(r.get("company_name") or "").strip().lower() for r in items}
+    if target_name.lower() not in matched_names:
+        items.insert(0, {
+            "company_name": target_name,
+            "display_name": target_row.get("display_name") or target_name,
+            "company_key": target_row.get("company_key") or target_name.lower(),
+            "competitors": target_row.get("competitors") or "",
+            "score_defensibility": target_row.get("score_defensibility"),
+            "score_incumbent_attention": target_row.get("score_incumbent_attention"),
+            "score_value_capture": target_row.get("score_value_capture"),
+            "funding_stage_score": target_row.get("funding_stage_score"),
+            "stack_layer": target_row.get("stack_layer"),
+            "ecosystem_niche": target_row.get("ecosystem_niche"),
+            "ecosystem_positioning": target_row.get("ecosystem_positioning"),
+        })
+
     # 补充 competitors_top3（或 competitors）中未入库的竞品（估算坐标）
-    top3_raw = target_row.get("competitors_top3") or target_row.get("competitors")
-    if top3_raw and isinstance(top3_raw, str):
-        try:
-            top3_list = json.loads(top3_raw)
-        except Exception:
-            top3_list = []
-        if isinstance(top3_list, list):
-            matched_names = {str(r.get("company_name") or "").strip().lower() for r in items}
-            def _safe_score(val, default=5.0):
-                try:
-                    v = float(val)
-                    return v if v is not None and 0 <= v <= 10 else default
-                except (TypeError, ValueError):
-                    return default
+    top3_list = _parse_competitor_items(
+        target_row.get("competitors_top3"),
+        target_row.get("competitors"),
+        target_row.get("market_landscape_top_players"),
+    )
+    if not top3_list:
+        top3_list = [{"name": name, "rank": idx + 1} for idx, name in enumerate(competitor_names)]
+    if top3_list:
+        matched_names = {str(r.get("company_name") or "").strip().lower() for r in items}
+        def _safe_score(val, default=5.0):
+            try:
+                v = float(val)
+                return v if v is not None and 0 <= v <= 10 else default
+            except (TypeError, ValueError):
+                return default
 
-            target_scores = {
-                "defensibility": _safe_score(target_row.get("score_defensibility")),
-                "incumbent_attention": _safe_score(target_row.get("score_incumbent_attention")),
-            }
-            # 基于实际数据计算参考：已有竞品的平均分
-            existing_competitors = [
-                r for r in items
-                if str(r.get("company_name") or "").strip().lower() != target_name.lower()
-                and r.get("score_defensibility") is not None
-            ]
-            if existing_competitors:
-                avg_def = sum(_safe_score(c.get("score_defensibility")) for c in existing_competitors) / len(existing_competitors)
-                avg_inc = sum(_safe_score(c.get("score_incumbent_attention")) for c in existing_competitors) / len(existing_competitors)
-            else:
-                avg_def = target_scores["defensibility"]
-                avg_inc = target_scores["incumbent_attention"]
+        target_scores = {
+            "defensibility": _safe_score(target_row.get("score_defensibility")),
+            "incumbent_attention": _safe_score(target_row.get("score_incumbent_attention")),
+            "value_capture": _safe_score(target_row.get("score_value_capture")),
+            "funding_stage": _safe_score(target_row.get("funding_stage_score")),
+        }
+        # 基于实际数据计算参考：已有竞品的平均分
+        existing_competitors = [
+            r for r in items
+            if str(r.get("company_name") or "").strip().lower() != target_name.lower()
+            and r.get("score_defensibility") is not None
+        ]
+        if existing_competitors:
+            avg_def = sum(_safe_score(c.get("score_defensibility")) for c in existing_competitors) / len(existing_competitors)
+            avg_inc = sum(_safe_score(c.get("score_incumbent_attention")) for c in existing_competitors) / len(existing_competitors)
+            avg_value = sum(_safe_score(c.get("score_value_capture")) for c in existing_competitors) / len(existing_competitors)
+        else:
+            avg_def = target_scores["defensibility"]
+            avg_inc = target_scores["incumbent_attention"]
+            avg_value = target_scores["value_capture"]
 
-            for idx, comp in enumerate(top3_list):
-                if not isinstance(comp, dict):
-                    continue
-                name = str(comp.get("name") or "").strip()
-                if not name or name.lower() in matched_names:
-                    continue
-                rank = int(comp.get("rank", idx + 1))
-                # 基于排名估算：rank1 通常护城河更强，rank3 较弱
-                rank_factor_def = {1: 1.25, 2: 1.0, 3: 0.7}.get(rank, 0.85)
-                rank_factor_inc = {1: 1.1, 2: 0.9, 3: 0.65}.get(rank, 0.8)
-                est_def = min(10.0, max(1.0, avg_def * rank_factor_def))
-                est_inc = min(10.0, max(1.0, avg_inc * rank_factor_inc))
-                items.append({
-                    "company_name": name,
-                    "display_name": name,
-                    "company_key": name.lower().replace(" ", "_"),
-                    "score_defensibility": round(est_def, 1),
-                    "score_incumbent_attention": round(est_inc, 1),
-                    "estimated_position": True,
-                })
-                matched_names.add(name.lower())
+        for idx, comp in enumerate(top3_list):
+            if not isinstance(comp, dict):
+                continue
+            name = str(comp.get("name") or "").strip()
+            if not name or name.lower() in matched_names:
+                continue
+            rank = int(comp.get("rank", idx + 1))
+            # 基于排名估算：rank1 通常护城河更强，rank3 较弱
+            rank_factor_def = {1: 1.25, 2: 1.0, 3: 0.7}.get(rank, 0.85)
+            rank_factor_inc = {1: 1.1, 2: 0.9, 3: 0.65}.get(rank, 0.8)
+            rank_factor_value = {1: 1.15, 2: 0.95, 3: 0.75}.get(rank, 0.85)
+            est_def = min(10.0, max(1.0, avg_def * rank_factor_def))
+            est_inc = min(10.0, max(1.0, avg_inc * rank_factor_inc))
+            est_value = min(10.0, max(1.0, avg_value * rank_factor_value))
+            items.append({
+                "company_name": name,
+                "display_name": name,
+                "company_key": name.lower().replace(" ", "_"),
+                "score_defensibility": round(est_def, 1),
+                "score_incumbent_attention": round(est_inc, 1),
+                "score_value_capture": round(est_value, 1),
+                "funding_stage_score": target_scores["funding_stage"],
+                "stack_layer": comp.get("stack_layer") or target_row.get("stack_layer") or "vertical_app",
+                "ecosystem_niche": comp.get("data") or comp.get("description") or "",
+                "ecosystem_positioning": comp.get("product") or "",
+                "estimated_position": True,
+            })
+            matched_names.add(name.lower())
+
+    for item in items:
+        item["stack_layer"] = _resolve_stack_layer_for_chart(item)
 
     # Cap items to max_companies after estimated-competitor fallback
     if len(items) > max_companies:
@@ -1112,7 +1341,7 @@ def save_final_card():
 
         company_name = data.get("company_name")
         card_index = data.get("card_index")
-        card_set_key = data.get("card_set_key", "v1")      # 新增
+        card_set_key = data.get("card_set_key", config.DEFAULT_CARD_SET_KEY)      # 新增
         markdown_content = data.get("markdown_content")
         fields = data.get("fields", {})
         img_paths = data.get("img_paths", {})
@@ -1120,7 +1349,7 @@ def save_final_card():
         if not company_name or not card_index:
             return jsonify({"error": "缺少 company_name 或 card_index"}), 400
         # 动态校验 card_index 范围
-        max_card = 7 if card_set_key == "v2" else 8
+        max_card = 7 if card_set_key in ("v2", "v4") else 8
         if card_index < 1 or card_index > max_card:
             return jsonify({"error": f"card_index 超出套卡 {card_set_key} 范围（1-{max_card}）"}), 400
 
@@ -1158,7 +1387,7 @@ def save_final_card():
 @app.route("/api/final/status/<company>")
 def get_final_status(company: str):
     try:
-        set_key = request.args.get("set", "v1")
+        set_key = request.args.get("set", config.DEFAULT_CARD_SET_KEY)
         return jsonify(database.get_final_status(
             config.DB_PATH_FINAL, company, card_set_key=set_key
         ))
@@ -1169,7 +1398,7 @@ def get_final_status(company: str):
 @app.route("/api/final/card/<company>/<int:card_index>")
 def get_final_card(company: str, card_index: int):
     try:
-        set_key = request.args.get("set", "v1")
+        set_key = request.args.get("set", config.DEFAULT_CARD_SET_KEY)
         markdown = database.get_final_card_markdown(
             config.DB_PATH_FINAL, company, card_index, card_set_key=set_key
         )
@@ -1185,7 +1414,7 @@ def get_final_card(company: str, card_index: int):
 @app.route("/api/final/export/<company>")
 def export_company(company: str):
     try:
-        set_key = request.args.get("set", "v1")
+        set_key = request.args.get("set", config.DEFAULT_CARD_SET_KEY)
         fmt = request.args.get("format", "markdown")
         if fmt in ("bundle", "pdf", "notion"):
             from services.export_service import render_export_bundle
@@ -1545,49 +1774,107 @@ def get_company_assets(company: str):
         return jsonify({"error": str(e)}), 500
 
 
+def _load_asset_company_data_from_fields(company: str) -> dict | None:
+    """从 research_fields 组装图片采集所需的公司数据。"""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(config.DB_PATH_RESEARCH)
+        conn.row_factory = sqlite3.Row
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='research_fields'"
+        ).fetchone()
+        if not exists:
+            conn.close()
+            return None
+        rows = conn.execute(
+            """
+            SELECT rf.company_name, rf.company_key, rf.field_key, rf.field_value
+            FROM research_fields rf
+            JOIN (
+                SELECT field_key, MAX(id) AS max_id
+                FROM research_fields
+                WHERE version='standard'
+                  AND (LOWER(company_name)=LOWER(?) OR LOWER(company_key)=LOWER(?))
+                GROUP BY field_key
+            ) latest ON latest.max_id = rf.id
+            ORDER BY rf.id
+            """,
+            (company, company),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        return None
+
+    if not rows:
+        return None
+
+    values = {r["field_key"]: r["field_value"] for r in rows}
+    first = rows[0]
+    company_name = values.get("company_name") or first["company_name"] or company
+    company_url = values.get("company_url") or values.get("website_url") or ""
+    return {
+        "company_name": company_name,
+        "company_key": first["company_key"] or "",
+        "company_url": company_url,
+        "website_url": values.get("website_url") or company_url,
+        "location": values.get("location") or "",
+        "founder_name": values.get("founder_name") or "",
+        "main_product_name": values.get("main_product_name") or "",
+        "main_product_img_src": values.get("main_product_img_src") or "",
+        "office_photo_hints": _safe_json_parse(values.get("office_photo_hints") or ""),
+        "other_products": values.get("other_products") or "",
+        "competitors": values.get("competitors") or "",
+    }
+
+
 @app.route("/api/assets/collect/<company>", methods=["POST"])
 def collect_assets(company: str):
     """触发自动采集。可选 ?asset_key=office 只采集单个槽位。"""
     try:
         # 从 research DB 获取公司数据
         research = database.get_research(config.DB_PATH_RESEARCH, company, "standard")
-        if not research:
-            return jsonify({"error": f"未找到公司 {company} 的研究数据"}), 404
-
         asset_key = request.args.get("asset_key", "").strip()
 
-        company_data = {
-            "company_name": company,
-            "company_url": _extract_company_url(research) or research.get("website_url", ""),
-            "website_url": _extract_company_url(research) or research.get("website_url", ""),
-            "location": research.get("location", ""),
-            "founder_name": research.get("founder_name", ""),
-            "main_product_name": research.get("main_product_name", ""),
-            "main_product_img_src": research.get("main_product_img_src", ""),
-            "office_photo_hints": _safe_json_parse(research.get("office_photo_hints", "")),
-            "other_products": research.get("other_products", ""),
-            "competitors": research.get("competitors", ""),
-        }
+        if research:
+            company_data = {
+                "company_name": company,
+                "company_key": research.get("company_key", ""),
+                "company_url": _extract_company_url(research) or research.get("website_url", ""),
+                "website_url": _extract_company_url(research) or research.get("website_url", ""),
+                "location": research.get("location", ""),
+                "founder_name": research.get("founder_name", ""),
+                "main_product_name": research.get("main_product_name", ""),
+                "main_product_img_src": research.get("main_product_img_src", ""),
+                "office_photo_hints": _safe_json_parse(research.get("office_photo_hints", "")),
+                "other_products": research.get("other_products", ""),
+                "competitors": research.get("competitors", ""),
+            }
+        else:
+            company_data = _load_asset_company_data_from_fields(company)
+            if not company_data:
+                return jsonify({"error": f"未找到公司 {company} 的研究数据"}), 404
 
         images_root = config.IMAGES_DIR
+        company_key = company_data.get("company_key", "")
 
         # founder_photo / logo 单独处理，不走主 pipeline
         if asset_key == "founder_photo":
             from asset_pipeline import _collect_founder_photo_variants
-            ensure_assets_rows(config.DB_PATH_ASSETS, company)
+            ensure_assets_rows(config.DB_PATH_ASSETS, company, company_key=company_key)
             n = _collect_founder_photo_variants(
                 config.DB_PATH_ASSETS, images_root, company, company_data,
+                company_key=company_key,
             )
             return jsonify({"status": "ok", "company_name": company, "results": {"founder_photo": n}})
 
         if asset_key == "logo":
             from asset_pipeline import collect_logo
-            ensure_assets_rows(config.DB_PATH_ASSETS, company)
+            ensure_assets_rows(config.DB_PATH_ASSETS, company, company_key=company_key)
             result = collect_logo(
                 config.DB_PATH_ASSETS, images_root, company,
                 company_url=company_data.get("company_url", ""),
                 website_url=company_data.get("website_url", ""),
-                company_key=company_data.get("company_name", ""),
+                company_key=company_key,
             )
             return jsonify({"status": "ok", "company_name": company,
                           "results": {"logo": 1 if result else 0}})
@@ -2615,8 +2902,8 @@ def index():
 def generate_abstract(company: str):
     """生成三版本全量 Markdown 摘要"""
     try:
-        set_key = request.args.get("set", "v1")
-        max_card = 7 if set_key == "v2" else 8
+        set_key = request.args.get("set", config.DEFAULT_CARD_SET_KEY)
+        max_card = 7 if set_key in ("v2", "v4") else 8
         abstracts = {}
         for version in ("standard", "business", "spread"):
             parts = []
@@ -2845,7 +3132,7 @@ def start_export(company: str):
         card_ids = data.get("card_ids")  # None = 全部启用卡片
         fmt = data.get("format", "png")
         scale = data.get("scale", 2)
-        set_key = data.get("set", "v1")
+        set_key = data.get("set", config.DEFAULT_CARD_SET_KEY)
 
         job_id = create_job(company, card_ids=card_ids, fmt=fmt, scale=scale, card_set_key=set_key)
         project_root = str(Path(__file__).resolve().parent.parent)

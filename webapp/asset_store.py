@@ -51,6 +51,27 @@ ASSET_TO_CARD_V2["competitors_logo_strip"] = 7
 ASSET_TO_CARD_V2["chart_competitive"] = 7
 ASSET_TO_CARD_V2["chart_ecosystem"] = 3   # v2 改为 card_3
 
+_COMPETITORS_DISALLOWED_PATH_MARKERS = (
+    "/chart_competitive",
+    "/chart_ecosystem",
+    "/positioning_charts",
+    "chart_competitive__",
+    "chart_ecosystem__",
+    "positioning_charts__",
+)
+
+
+def _is_asset_path_mismatch(asset_key: str, local_path: str | None,
+                            source_type: str | None = None) -> bool:
+    """Return True when a stored image clearly belongs to another slot."""
+    if asset_key != "competitors":
+        return False
+    path = (local_path or "").lower()
+    src = (source_type or "").lower()
+    if "derived_from_chart" in src:
+        return True
+    return any(marker in path for marker in _COMPETITORS_DISALLOWED_PATH_MARKERS)
+
 
 def _company_where(company_name: str, company_key: str = "") -> tuple[str, list]:
     """构建 company WHERE 子句 — 优先 company_key，回退 case-insensitive company_name。"""
@@ -183,6 +204,15 @@ def upsert_asset(db_path: str, company_name: str, asset_key: str,
                  fail_reason: str = None,
                  company_key: str = ""):
     """写入或更新单条资产"""
+    normalized_local_path = normalize_browser_image_path(local_path)
+    if _is_asset_path_mismatch(asset_key, normalized_local_path, source_type):
+        local_path = ""
+        normalized_local_path = ""
+        status = "failed"
+        fail_reason = fail_reason or "asset_key/local_path mismatch"
+        selected_variant_id = None
+        final_score = 0 if final_score is None else final_score
+
     with _get_db(db_path) as conn:
         where, where_params = _company_where(company_name, company_key)
         row = conn.execute(
@@ -202,7 +232,7 @@ def upsert_asset(db_path: str, company_name: str, asset_key: str,
                      "source_url", "prompt", "status", "selected_variant_id",
                      "final_score", "auto_selected", "fail_reason", "meta_json"]
             vals += [asset_key, card_index,
-                     normalize_browser_image_path(local_path), source_type, source_url, prompt,
+                     normalized_local_path, source_type, source_url, prompt,
                      status or "missing", selected_variant_id, final_score or 0,
                      int(bool(auto_selected)) if auto_selected is not None else 0,
                      fail_reason, json.dumps(meta, ensure_ascii=False) if meta else None]
@@ -213,7 +243,7 @@ def upsert_asset(db_path: str, company_name: str, asset_key: str,
         else:
             updates = {}
             if local_path is not None:
-                updates["local_path"] = normalize_browser_image_path(local_path)
+                updates["local_path"] = normalized_local_path
             if source_type is not None:
                 updates["source_type"] = source_type
             if source_url is not None:
@@ -299,7 +329,15 @@ def list_variants(db_path: str, company_name: str, asset_key: str,
                ORDER BY is_selected DESC, final_score DESC, created_at DESC""",
             [*params, asset_key],
         ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = _row_to_dict(r)
+        if not d:
+            continue
+        if _is_asset_path_mismatch(asset_key, d.get("local_path"), d.get("source_type")):
+            continue
+        result.append(d)
+    return result
 
 
 def insert_variant(db_path: str, company_name: str, asset_key: str,
@@ -314,6 +352,9 @@ def insert_variant(db_path: str, company_name: str, asset_key: str,
                    reject_reason: str = "", meta: dict = None,
                    company_key: str = "") -> int:
     """插入一条变体记录，返回 id"""
+    normalized_local_path = normalize_browser_image_path(local_path)
+    if _is_asset_path_mismatch(asset_key, normalized_local_path, source_type):
+        raise ValueError(f"asset_key/local_path mismatch: {asset_key} -> {normalized_local_path}")
     with _get_db(db_path) as conn:
         cols, vals = _company_write_cols(company_name, company_key)
         cols += ["asset_key", "local_path", "source_type", "source_url",
@@ -321,7 +362,7 @@ def insert_variant(db_path: str, company_name: str, asset_key: str,
                  "prompt", "width", "height", "file_size", "aspect_ratio",
                  "quality_score", "relevance_score", "source_score",
                  "final_score", "reject_reason", "meta_json"]
-        vals += [asset_key, normalize_browser_image_path(local_path), source_type,
+        vals += [asset_key, normalized_local_path, source_type,
                  source_url, source_page, author, license, attribution_req,
                  prompt, width, height, file_size, aspect_ratio,
                  quality_score, relevance_score, source_score, final_score,
@@ -347,6 +388,8 @@ def select_variant(db_path: str, company_name: str, asset_key: str,
             [variant_id, *params, asset_key],
         ).fetchone()
         if not row:
+            return False
+        if _is_asset_path_mismatch(asset_key, row["local_path"], row["source_type"]):
             return False
 
         # 取消该 asset_key 下所有变体的选中
@@ -435,6 +478,15 @@ def _row_to_dict(row) -> dict | None:
         return None
     d = dict(row)
     d["local_path"] = normalize_browser_image_path(d.get("local_path"))
+    if _is_asset_path_mismatch(
+        str(d.get("asset_key") or ""),
+        d.get("local_path"),
+        d.get("source_type"),
+    ):
+        d["local_path"] = ""
+        d["status"] = "failed" if d.get("status") == "ready" else d.get("status", "missing")
+        d["selected_variant_id"] = None
+        d["fail_reason"] = d.get("fail_reason") or "asset_key/local_path mismatch"
     if d.get("meta_json"):
         try:
             d["meta"] = json.loads(d["meta_json"])

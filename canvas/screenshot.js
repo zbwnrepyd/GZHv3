@@ -5,11 +5,11 @@ const path = require('path');
 
 function usage() {
   console.log(`Usage:
-  node canvas/screenshot.js --company <name> [--set v1|v2|v3] [--base-url http://127.0.0.1:5050] [--out output/cards/<name>] [--bg-image <path>] [--shots 3] [--scale 3] [--params <json>] [--params-file <path>]
+  node canvas/screenshot.js --company <name> [--set v1|v2|v3|v4] [--base-url http://127.0.0.1:5050] [--out output/cards/<name>] [--bg-image <path>] [--shots 3] [--scale 3] [--params <json>] [--params-file <path>]
 
 Options:
   --company      Company name to export. Required.
-  --set          Card set key. Default: v1.
+  --set          Card set key. Default: v4.
   --base-url     Flask base URL. Default: http://127.0.0.1:5050
   --out          Output directory. Default: output/cards/<company>
   --bg-image     Path to local watermark image (PNG/JPEG). Injected as base64 data URL.
@@ -31,7 +31,7 @@ function parseArgs(argv) {
   const args = {
     baseUrl: 'http://127.0.0.1:5050',
     company: '',
-    set: 'v1',
+    set: 'v4',
     out: '',
     bgImage: null,
     shots: 3,

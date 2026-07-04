@@ -26,8 +26,15 @@
 11. differentiated_opportunity — 差异化机会（≤200字中文，基于竞品弱点 + L2 growth_loops）
 12. pricing_summary — 定价摘要
 13. pricing_strategy — 定价策略
-14. gtm_strategy — GTM策略（结合 L2 growth_loops 中 strong 的循环）
-15. growth_strategy — 增长策略
+14. revenue_model — 收入模式/盈利方式（2-3句中文，优先引用 L2 revenue_model）
+15. cost_advantage — 成本优势（1-2句中文；没有明确证据则填 null）
+16. switching_cost — 迁移成本/锁定机制（1-2句中文；没有明确证据则填 null）
+17. customer_segment — 客户细分（≤80字中文）
+18. gtm_motion — GTM 打法（如 PLG、销售驱动、社区驱动等，≤60字中文）
+19. gtm_strategy — GTM策略（结合 L2 growth_loops 中 strong 的循环）
+20. growth_strategy — 增长策略
+21. growth_flywheel — 增长飞轮（2-3句中文，说明触发、循环、放大机制）
+22. acquisition_channels — 获客渠道（JSON 数组，2-5项中文）
 
 ## 输出格式
 ```json
@@ -47,7 +54,14 @@
   "differentiated_opportunity": "string | null  (中文, ≤200字)",
   "pricing_summary": "string | null",
   "pricing_strategy": "string | null",
+  "revenue_model": "string | null",
+  "cost_advantage": "string | null",
+  "switching_cost": "string | null",
+  "customer_segment": "string | null",
+  "gtm_motion": "string | null",
   "gtm_strategy": "string | null",
-  "growth_strategy": "string | null"
+  "growth_strategy": "string | null",
+  "growth_flywheel": "string | null",
+  "acquisition_channels": ["string"] | null
 }
 ```

@@ -16,11 +16,18 @@ from services.card_config_service import create_default_cards_for_company
 
 def _resolve_field_value(company: str, field_key: str, card_no: int = None) -> str:
     """解析字段值。
-    优先级: final_card_values (SPEC v3 主读模型) → final_fields (向后兼容) → research_fields。
+    优先级: final_fields（人工保存）→ final_card_values（研究读模型）→ research_fields。
     """
     company_key = company.lower()
 
-    # SPEC v3: 优先读 final_card_values (卡片展示读模型)
+    # 人工定稿优先。
+    raw = get_final_field_value(config.DB_PATH_FINAL, company, field_key)
+    if raw is _EMPTY_FINAL:
+        return ""  # 用户显式清空
+    if raw is not None:
+        return raw
+
+    # SPEC v3: 再读 final_card_values (卡片展示读模型)
     if card_no is not None:
         try:
             rows = get_final_card_values(config.DB_PATH_FINAL, company_key, card_no=card_no)
@@ -36,17 +43,11 @@ def _resolve_field_value(company: str, field_key: str, card_no: int = None) -> s
             val = r.get("field_value") or r.get("final_value") or ""
             return val
 
-    # 回退：final_fields (向后兼容)
-    raw = get_final_field_value(config.DB_PATH_FINAL, company, field_key)
-    if raw is _EMPTY_FINAL:
-        return ""  # 用户显式清空
-    if raw is not None:
-        return raw
     return get_research_field_value(config.DB_PATH_RESEARCH, company, field_key) or ""
 
 
 def _get_set_key() -> str:
-    return (request.args.get("set") or "v1").strip()
+    return (request.args.get("set") or config.DEFAULT_CARD_SET_KEY).strip()
 
 
 def _enabled_cards_or_defaults(company: str) -> list[dict]:
@@ -78,18 +79,27 @@ def register(bp: Blueprint):
     def get_render_data(company: str):
         """返回某公司全部启用卡片的渲染数据。
 
-        v3: 走 RenderAssembler → RenderContract 格式 (Goal 一)
+        v3/v4: 走 RenderAssembler → RenderContract 格式 (Goal 一)
         v1/v2: 保持旧格式向后兼容
         """
         try:
             set_key = _get_set_key()
 
-            # v3: RenderContract format via RenderAssembler (Goal 一)
-            if set_key == 'v3':
+            # v3+ system card sets use RenderContract format via RenderAssembler.
+            if set_key in ('v3', 'v4'):
                 from services.render_assembler import RenderAssembler
                 from services.contract_validator import ContractValidator
                 assembler = RenderAssembler()
                 contract = assembler.assemble(company, set_key)
+                for card in contract.get("cards", []):
+                    card_id = card.get("card_id")
+                    if not card_id:
+                        continue
+                    layout = get_layout(config.DB_PATH_TEMPLATE, company, card_id)
+                    if layout and layout.get("layout_json"):
+                        merged_layout = dict(card.get("layout") or {})
+                        merged_layout.update(layout["layout_json"])
+                        card["layout"] = merged_layout
                 try:
                     ContractValidator.validate(contract)
                 except Exception:

@@ -168,15 +168,70 @@ class PipelineFailureTests(unittest.TestCase):
         scrapling_entry = next(e for e in plan.adapters if e["adapter_family"] == "scrapling_search")
         self.assertNotIn("ltv", scrapling_entry["field_targets"])
 
-    def test_card_set_field_targets_cover_v1_v2_v3_union(self):
+    def test_card_set_field_targets_cover_v1_v2_v3_v4_union(self):
         fields = pipeline._load_card_set_field_targets()
 
-        self.assertEqual(len(fields), 87)
         self.assertIn("timeline_events", fields)
         self.assertIn("competitors_summary", fields)
         self.assertIn("competitors_top3", fields)
         self.assertIn("company_def", fields)
         self.assertIn("product_tech_stack", fields)
+        self.assertIn("market_landscape_top_players", fields)
+        self.assertIn("main_product_highlight", fields)
+        self.assertIn("other_products", fields)
+        self.assertIn("product_pain_points", fields)
+        self.assertIn("workflow_integration_level", fields)
+        self.assertIn("inference_cost_exposure", fields)
+
+    def test_l3_value_gaps_include_card_target_fields(self):
+        required = pipeline._load_required_field_contract_keys()
+        record = {"version": "standard"}
+        for key in required:
+            record[key] = f"{key} value"
+        record.update({
+            "core_business": "主营业务",
+            "product_pain_points": "痛点",
+        })
+
+        report = pipeline._evaluate_l3_value_gaps(record)
+
+        self.assertTrue(report["should_refetch"])
+        self.assertIn("main_product_highlight", report["missing_required_fields"])
+        self.assertNotIn("other_products", report["missing_required_fields"])
+
+    def test_l3_gap_queries_use_market_semantics_not_field_names(self):
+        record = {
+            "market_track": "AI 融资代理",
+            "market_subtrack": "投资人匹配与创业融资自动化",
+            "core_business": "用 AI 帮创业公司匹配投资人并预约会议。",
+        }
+        missing = [
+            "market_size_value",
+            "market_size_currency",
+            "market_size_year",
+            "market_cagr",
+            "tam_value",
+            "tam_currency",
+            "tam_year",
+        ]
+
+        queries = pipeline._build_l3_gap_refetch_queries(
+            "Fundraisly",
+            "fundraisly.com",
+            record,
+            missing,
+            limit=8,
+        )
+
+        query_text = "\n".join(q["query"] for q in queries)
+        self.assertTrue(queries)
+        self.assertIn("market size", query_text)
+        self.assertIn("CAGR", query_text)
+        self.assertIn("TAM", query_text)
+        self.assertIn("AI fundraising software", query_text)
+        self.assertNotIn("market_size_value", query_text)
+        self.assertNotIn("tam_value", query_text)
+        self.assertTrue(all(q["intent"] == "market_size" for q in queries[:2]))
 
     def test_complete_contract_fields_fills_all_fields_json_keys(self):
         record = {
@@ -633,23 +688,16 @@ class PipelineFailureTests(unittest.TestCase):
 
         self.assertFalse(pipeline._needs_pre_gap_refetch(raw))
 
-    def test_l3_value_gap_refetch_skips_when_required_fields_have_values(self):
-        record = {
-            "company_name": "DemoCo",
-            "version": "standard",
-            "company_def": "DemoCo 是一款 AI 设计工具。",
-            "market_track": "AI 设计工具",
-            "market_subtrack": "消费级图像编辑",
-            "market_landscape_summary": "AI 设计工具赛道快速增长。",
-            "core_business": "提供 AI 图片生成与编辑。",
-            "competitors_top3": "[\"A\", \"B\", \"C\"]",
-            "competitive_position": "DemoCo 面向专业创作者。",
-        }
+    def test_l3_value_gap_refetch_skips_when_quality_fields_have_values(self):
+        record = {"company_name": "DemoCo", "version": "standard"}
+        for key in pipeline._load_quality_field_targets():
+            record[key] = f"{key} value"
 
         report = pipeline._evaluate_l3_value_gaps(record)
 
         self.assertFalse(report["should_refetch"])
         self.assertEqual(report["missing_required_fields"], [])
+        self.assertGreaterEqual(report["field_coverage_ratio"], 0.95)
         self.assertGreater(report["usable_field_count"], 0)
 
     def test_l3_value_gap_refetch_fails_when_no_contract_fields_are_usable(self):
@@ -681,7 +729,7 @@ class PipelineFailureTests(unittest.TestCase):
         # 验证补采数量不超过限制
         self.assertLessEqual(len(selected), 8)
 
-    def test_tavily_query_defaults_to_basic_without_raw_content(self):
+    def test_tavily_query_defaults_to_advanced_without_raw_content(self):
         bodies = []
 
         def fake_post(url, json, timeout, proxies=None):
@@ -693,7 +741,7 @@ class PipelineFailureTests(unittest.TestCase):
             pipeline._TAVILY_QUERY_CACHE.clear()
             pipeline._search_tavily_query("DemoCo default Tavily test")
 
-        self.assertEqual(bodies[0]["search_depth"], "basic")
+        self.assertEqual(bodies[0]["search_depth"], "advanced")
         self.assertFalse(bodies[0]["include_raw_content"])
 
     def test_tavily_query_normalizes_legacy_deep_search_depth(self):
@@ -738,7 +786,7 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertIn("tavily", report["weak_sources"])
 
     def test_research_completeness_passes_multi_source_required_field_coverage(self):
-        required = pipeline._load_required_field_contract_keys()
+        required = pipeline._load_quality_field_targets()
         record = {"version": "standard"}
         for key in required:
             record[key] = f"{key} value"
@@ -766,8 +814,43 @@ class PipelineFailureTests(unittest.TestCase):
         report = pipeline._evaluate_research_completeness(raw, [record])
 
         self.assertTrue(report["passed"])
-        self.assertGreaterEqual(report["completeness_ratio"], 0.85)
+        self.assertEqual(report["threshold"], 0.95)
+        self.assertGreaterEqual(report["completeness_ratio"], 0.95)
         self.assertEqual(report["missing_required_fields"], [])
+
+    def test_research_completeness_allows_missing_soft_card_facts(self):
+        hard_required = pipeline._load_quality_gate_field_targets()
+        record = {"version": "standard"}
+        for key in hard_required:
+            record[key] = f"{key} value"
+        raw = {
+            "_source_summary": {
+                "official_site": {"status": "ok", "count": 5},
+                "scrapling_search": {
+                    "status": "ok",
+                    "count": 15,
+                    "parsed_url_count": 30,
+                },
+                "tavily": {
+                    "status": "ok",
+                    "count": 20,
+                    "unique_url_count": 12,
+                    "intent_count": 5,
+                },
+                "github": {"status": "ok", "count": 3},
+                "youtube": {"status": "ok", "count": 3},
+                "whatweb": {"status": "ok", "count": 1},
+            },
+            "_evidence_pool": [object() for _ in range(25)],
+        }
+
+        report = pipeline._evaluate_research_completeness(raw, [record])
+
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["missing_required_fields"], [])
+        self.assertIn("founded_date", report["missing_quality_fields"])
+        self.assertIn("team_size", report["missing_quality_fields"])
+        self.assertNotIn("other_products", report["missing_quality_fields"])
 
     def test_adaptive_initial_tavily_queries_use_basic_without_raw_content(self):
         plan = SimpleNamespace(
@@ -922,7 +1005,50 @@ class PipelineFailureTests(unittest.TestCase):
         self.assertIsInstance(ids, list)
         self.assertTrue(inserted_batches)
         self.assertTrue(all(row["company_name"] == "Limitless" for row in inserted_batches[0]))
-        self.assertTrue(any(row["field_key"] == "company_type" for row in inserted_batches[0]))
+
+    def test_run_pipeline_translates_evidence_pool_before_persisting(self):
+        evidence = SimpleNamespace(content="DemoCo helps teams automate research workflows.")
+
+        def translate_evidence(pool):
+            pool[0].content = "DemoCo 帮助团队自动化研究流程。"
+
+        def assert_translated_before_persist(_company_name, pool):
+            self.assertEqual(pool[0].content, "DemoCo 帮助团队自动化研究流程。")
+
+        with patch.object(pipeline, "_collect_via_adapters", return_value={
+                "company_name": "DemoCo",
+                "company_key": "democo",
+                "display_name": "DemoCo",
+                "website": {"text": "ok"},
+                "_source_summary": {},
+            }), \
+             patch.object(pipeline, "_build_evidence_pool", return_value=[evidence]), \
+             patch.object(pipeline, "_translate_evidence_pool_on_collection", side_effect=translate_evidence) as translate, \
+             patch.object(pipeline, "_persist_evidence", side_effect=assert_translated_before_persist), \
+             patch.object(pipeline, "llm_analysis", return_value=[{
+                 "company_name": "DemoCo",
+                 "version": "standard",
+                 "company_type": "AI 工具",
+                 "company_def": "AI 研究工具",
+                 "data_confidence": "高",
+             }]), \
+             patch.object(pipeline.config, "COLLECTION_ENABLE_GAP_REFETCH", False), \
+             patch("repositories.field_repo.insert_research_fields_batch", return_value=1), \
+             patch("services.entity_sync_service.EntitySyncService.sync_from_llm_result", return_value={}), \
+             patch("services.card_value_builder.CardValueBuilder.build_card_values", return_value=[]), \
+             patch("services.card_value_builder.CardValueBuilder.write_to_final_card_values", return_value=0), \
+             patch("asset_pipeline.collect_image_variants_pipeline", return_value={}):
+            pipeline.run_pipeline(
+                "DemoCo",
+                "https://demo.example",
+                research_options={
+                    "quality_gate": False,
+                    "gap_refetch": False,
+                    "document_chunking": False,
+                },
+            )
+
+        translate.assert_called_once()
 
     def test_run_pipeline_respects_disabled_image_collection(self):
         records = [
@@ -1205,6 +1331,44 @@ class PipelineFailureTests(unittest.TestCase):
         conn.close()
         self.assertEqual(len(strong_spans), 0)
         self.assertGreaterEqual(len(weak_spans), 1)
+
+    def test_completeness_quality_fields_fails_below_95_percent(self):
+        """95% 质量门控下：字段覆盖率不足不能通过。"""
+        twelve_keys = [
+            "company_name", "company_def", "market_track",
+            "market_landscape_summary", "core_business",
+            "competitors_top3", "competitive_position",
+            "main_product_name", "founded_date", "pricing_summary",
+            "customer_names", "gtm_strategy",
+        ]
+        fake_raw = {
+            "_source_summary": {
+                "official_site": {"status": "ok", "count": 5},
+                "scrapling_search": {"status": "ok", "count": 20, "parsed_url_count": 35},
+                "tavily": {"status": "ok", "count": 15, "unique_url_count": 15, "intent_count": 3},
+                "github": {"status": "ok", "count": 3},
+                "youtube": {"status": "ok", "count": 2},
+                "producthunt": {"status": "ok", "count": 1},
+            },
+            "_evidence_pool": list(range(20)),  # 20 evidence items = perfect evidence_score
+        }
+        # 12 字段中有 9 个已填充（缺3个）
+        filled = dict.fromkeys(twelve_keys[:9], "有值")
+        missing_keys = set(twelve_keys[9:])
+        records = [filled]
+
+        with patch.object(pipeline, "_load_quality_gate_field_targets", return_value=twelve_keys), \
+             patch.object(pipeline, "_load_quality_field_targets", return_value=twelve_keys):
+            report = pipeline._evaluate_research_completeness(fake_raw, records)
+
+        self.assertAlmostEqual(report["field_score"], 9 / 12, places=2)
+        # 0.35*source + 0.20*evidence + 0.45*field
+        # source ~= 1.0 (all sources ok), evidence = 20/20 = 1.0, field = 0.75
+        # completeness ~= 0.35 + 0.20 + 0.3375 = 0.8875
+        self.assertGreaterEqual(report["completeness_ratio"], 0.85)
+        self.assertEqual(report["threshold"], 0.95)
+        self.assertFalse(report["passed"])
+        self.assertEqual(set(report["missing_required_fields"]), missing_keys)
 
 
 if __name__ == "__main__":

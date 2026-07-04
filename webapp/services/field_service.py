@@ -125,36 +125,88 @@ def _is_predominantly_english(text: str) -> bool:
     return len(words) >= 3
 
 
-def translate_field_value_if_needed(field_key: str, value: str) -> str:
-    """如果字段值以英文为主，记录警告并原样返回。
-
-    翻译应在采集阶段通过 TRANSLATE_ON_COLLECTION 完成，
-    写库热路径中不做同步 LLM 调用（耗时且阻塞管线）。
-    保留英文的字段（专有名词等）见 _ENGLISH_OK_FIELDS。
-    """
+def _translatable_field_value(field_key: str, value: str) -> str | None:
     if field_key in _ENGLISH_OK_FIELDS:
-        return value
+        return None
     if not value or not isinstance(value, str):
-        return value
+        return None
     if value.strip() in ('', '暂缺'):
-        return value
+        return None
     stripped = value.strip()
     if stripped.startswith('[') or stripped.startswith('{'):
-        return value
+        return None
     if not _is_predominantly_english(stripped):
+        return None
+    return stripped
+
+
+def translate_field_value_if_needed(field_key: str, value: str) -> str:
+    """如果字段值以英文为主，翻译为中文后返回。
+
+    翻译应在采集阶段通过 TRANSLATE_ON_COLLECTION 完成，
+    这里作为字段生成后的兜底，防止英文值穿透到前端。
+    保留英文的字段（专有名词等）见 _ENGLISH_OK_FIELDS。
+    """
+    stripped = _translatable_field_value(field_key, value)
+    if not stripped:
         return value
 
-    # 不在此处同步调 LLM 翻译——采集阶段 TRANSLATE_ON_COLLECTION 已处理。
-    # 此处仅记录日志，英文值保留入库（后续可批量异步翻译）。
     import logging
     _log = logging.getLogger("field_service")
+    try:
+        from deepseek_client import translate_to_chinese
+        translated = translate_to_chinese([stripped])
+    except Exception as exc:
+        _log.warning(
+            "field %s English value fallback translation failed: %s",
+            field_key, exc,
+        )
+        return value
+
+    if translated and translated[0] and translated[0] != stripped:
+        return translated[0]
+
     _log.warning(
-        "field %s has English value (%d chars) — "
-        "TRANSLATE_ON_COLLECTION should have caught this. "
-        "Keeping original value.",
+        "field %s has English value (%d chars) and translation returned original value.",
         field_key, len(stripped),
     )
     return value
+
+
+def translate_field_rows_if_needed(field_rows: list[dict]) -> list[dict]:
+    """Batch-translate English field values in-place before DB writes."""
+    to_translate: list[tuple[int, str]] = []
+    for idx, row in enumerate(field_rows or []):
+        text = _translatable_field_value(
+            row.get("field_key", ""),
+            row.get("field_value", ""),
+        )
+        if text:
+            to_translate.append((idx, text))
+
+    if not to_translate:
+        return field_rows
+
+    import logging
+    _log = logging.getLogger("field_service")
+    texts = [text for _, text in to_translate]
+    try:
+        from deepseek_client import translate_to_chinese
+        translated = translate_to_chinese(texts)
+    except Exception as exc:
+        _log.warning("batch field translation failed: %s", exc)
+        return field_rows
+
+    for (idx, original), result in zip(to_translate, translated):
+        if result and result != original:
+            field_rows[idx]["field_value"] = result
+        else:
+            _log.warning(
+                "field %s has English value (%d chars) and translation returned original value.",
+                field_rows[idx].get("field_key", ""),
+                len(original),
+            )
+    return field_rows
 
 
 def split_research_to_fields(research_row: dict, version: str = "standard") -> list[dict]:
@@ -173,6 +225,12 @@ def split_research_to_fields(research_row: dict, version: str = "standard") -> l
             value = research_row.get(key)
             if value is None:
                 continue
+            if isinstance(value, (dict, list)):
+                field_value = json.dumps(value, ensure_ascii=False)
+            elif isinstance(value, str):
+                field_value = value
+            else:
+                field_value = str(value)
             result.append({
                 "company_name": company_name,
                 "company_key": company_key,
@@ -180,7 +238,7 @@ def split_research_to_fields(research_row: dict, version: str = "standard") -> l
                 "version": version,
                 "field_key": key,
                 "field_label": field_def.get("field_label", key),
-                "field_value": str(value) if not isinstance(value, str) else value,
+                "field_value": field_value,
                 "source_type": "llm_extract",
                 "confidence": "medium",
                 "value_type": _VALUE_TYPE_BY_CONTRACT_TYPE.get(field_def.get("type"), "text"),
@@ -210,7 +268,7 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
                              card_values_db_path: Optional[str] = None) -> list[dict]:
     """返回完整的字段列表（含三版本 + 定稿状态）。
 
-    定稿值优先级: final_card_values (SPEC v3 主读模型) → final_fields (向后兼容)。
+    定稿值优先级: final_fields（人工保存）→ final_card_values（研究读模型）→ research_fields。
     """
     contract = load_field_contract()
     versioned = get_field_versions(db_path_research, company_name)
@@ -246,18 +304,18 @@ def get_fields_with_versions(db_path_research: str, db_path_final: str,
             final = final_fields.get(key, {})
             cv = card_value_map.get(key, {})
 
-            # SPEC v3: card_value 优先作为 final_value
+            # 人工定稿值必须优先，否则保存后会被 final_card_values 旧读模型覆盖。
             cv_value = cv.get("field_value") or cv.get("final_value")
-            if _is_usable_value(cv_value):
-                final_value = cv_value
-            elif _is_usable_value(final.get("final_value")):
+            if _is_usable_value(final.get("final_value")):
                 final_value = final.get("final_value")
+            elif _is_usable_value(cv_value):
+                final_value = cv_value
             else:
                 final_value = vers.get("standard", "")
 
-            # SPEC v3: resolution_status 优先，回退 final_fields status
+            # 人工定稿状态优先，回退 final_card_values resolution_status。
             cv_status = cv.get("resolution_status") or cv.get("status")
-            final_status = cv_status or final.get("status", "draft")
+            final_status = final.get("status") or cv_status or "draft"
 
             # ── 轻量展示 fallback：cold_start/growth_flywheel/acquisition_channels ──
             # 字段本身为空时，从 gtm_strategy 或 ecosystem_niche 提供参考摘要（不写库）

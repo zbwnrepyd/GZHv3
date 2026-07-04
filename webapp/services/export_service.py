@@ -354,9 +354,9 @@ def run_export(job_id: str, project_root: str):
             except Exception:
                 files.append(str(html_path))
 
-        # ZIP 打包
-        if fmt == "zip" and len(files) > 1:
-            zip_path = output_dir / f"{company}_cards.zip"
+        # 多文件导出统一打包，避免“全部卡片 + PNG”下载时只返回第一张。
+        if len(files) > 1:
+            zip_path = output_dir / f"{company}_{set_key}_cards.zip"
             _create_zip(files, str(zip_path))
             job["download_url"] = f"/api/export/{company}/download/{job_id}"
             job["files"] = [str(zip_path)]
@@ -396,7 +396,7 @@ def _html_to_png_http(html: str, dest: str, project_root: str,
                                     device_scale_factor=scale)
             # 拦截 /images/ 请求，从本地文件系统返回
             page.route("**/images/**", lambda route: _serve_local_image(route, images_dir))
-            page.setContent(html, wait_until="networkidle", timeout=20000)
+            page.set_content(html, wait_until="networkidle", timeout=20000)
             try:
                 page.wait_for_function("document.fonts && document.fonts.ready", timeout=5000)
             except Exception:
@@ -497,6 +497,11 @@ def _build_card_html(card: dict, items: list[dict]) -> str:
                     f'<div style="{style}display:flex;align-items:center;justify-content:center;color:rgba(0,0,0,0.1);font-size:14px">[{role}]</div>')
         elif rtype == "shape":
             region_html_parts.append(f'<div style="{style}"></div>')
+        elif r.get("value") is not None:
+            ta = (r.get("style") or {}).get("textAlign", "left")
+            lh = (r.get("style") or {}).get("lineHeight", 1.55)
+            region_html_parts.append(
+                f'<div style="{style}text-align:{ta};line-height:{lh};white-space:pre-wrap;word-wrap:break-word">{_esc(str(r.get("value") or ""))}</div>')
         else:
             texts = [item.get("value", "") for item in role_map.get(role, role_map.get("body", []))]
             combined = "\n\n".join(t for t in texts if t)
@@ -549,6 +554,83 @@ def _build_markdown_card_html(card: dict, items: list[dict], layout_json: dict) 
     bg_color = style.get("bgColor") or "#FFFFFF"
     text_color = style.get("textColor") or _readable_text_color(bg_color)
     accent_color = style.get("accentColor") or "#29B8D4"
+    is_observation_cover = (
+        style.get("skin") == "ai_observation_cover"
+        or layout_json.get("template_id") == "cover_ai_observation_v4"
+    )
+    body_class = "layout-skin-observation" if is_observation_cover else ""
+    observation_skin_css = ""
+    if is_observation_cover:
+        observation_skin_css = """
+  body.layout-skin-observation {
+    background: #061A3A;
+  }
+  body.layout-skin-observation::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      linear-gradient(90deg, transparent 0 76%, rgba(90, 215, 255, .12) 76% 89%, rgba(247, 251, 255, .08) 89% 92%, transparent 92%),
+      linear-gradient(180deg, rgba(255,255,255,.08), transparent 22%, transparent 76%, rgba(255,255,255,.08));
+  }
+  body.layout-skin-observation::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    opacity: .10;
+    mix-blend-mode: screen;
+    background-image: url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22><filter id=%22n%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%221.05%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22180%22 height=%22180%22 filter=%22url(%23n)%22 opacity=%220.70%22/></svg>');
+    background-size: 180px 180px;
+  }
+  body.layout-skin-observation .layout-md-card {
+    z-index: 1;
+    padding: 96px;
+  }
+  body.layout-skin-observation .layout-md-card::before,
+  body.layout-skin-observation .layout-md-card::after {
+    content: "";
+    position: absolute;
+    left: 96px;
+    right: 96px;
+    height: 2px;
+    background: rgba(247, 251, 255, .72);
+  }
+  body.layout-skin-observation .layout-md-card::before { top: 92px; background: #5AD7FF; }
+  body.layout-skin-observation .layout-md-card::after { bottom: 198px; }
+  body.layout-skin-observation .layout-md-body {
+    position: relative;
+    z-index: 1;
+    padding-top: 42px;
+  }
+  body.layout-skin-observation h1 {
+    max-width: 708px;
+    font-size: 88px;
+    line-height: 1.02;
+    margin: 34px 0 22px;
+    color: #F7FBFF;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  body.layout-skin-observation h2 {
+    max-width: 620px;
+    font-size: 30px;
+    line-height: 1.1;
+    margin: 0;
+    color: #5AD7FF;
+    font-weight: 800;
+  }
+  body.layout-skin-observation p {
+    max-width: 580px;
+    color: rgba(247, 251, 255, .72);
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+  body.layout-skin-observation .layout-md-spacer { min-height: 210px; }
+"""
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -622,7 +704,8 @@ def _build_markdown_card_html(card: dict, items: list[dict], layout_json: dict) 
     color: rgba(15, 23, 42, .38);
     border: 1px dashed rgba(15, 23, 42, .18);
   }}
-</style></head><body>
+{observation_skin_css}
+</style></head><body class="{body_class}">
   <article class="layout-md-card" data-od-id="card-root">
     <div class="layout-md-body">{body}</div>
   </article>

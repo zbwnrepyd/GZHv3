@@ -311,6 +311,47 @@ class PrivateMetricGapDetectorTest(unittest.TestCase):
         self.assertIn("market_size", intents, "C 类缺口应生成补采 query")
         self.assertNotIn("unit_economics", intents, "D 类缺口不应生成补采 query")
 
+    def test_build_gap_queries_keeps_v3_market_size_fields(self):
+        """v3 宏观赛道字段应归入 market_size 补采意图。"""
+        from gap_detector import build_gap_queries
+        gaps = {
+            "market_size": [
+                "market_size_value",
+                "market_size_currency",
+                "market_size_year",
+                "market_cagr",
+                "tam_value",
+                "tam_currency",
+                "tam_year",
+            ],
+        }
+
+        queries = build_gap_queries(
+            display_name="Fundraisly",
+            website_host="fundraisly.com",
+            root_domain="fundraisly",
+            gaps=gaps,
+        )
+
+        self.assertGreater(len(queries), 0)
+        self.assertTrue(all(q["intent"] == "market_size" for q in queries))
+        fields = {field for q in queries for field in q.get("fields", [])}
+        self.assertIn("market_size_value", fields)
+        self.assertIn("tam_value", fields)
+
+    def test_detect_gaps_groups_v3_market_size_fields(self):
+        """缺失 v3 宏观字段时应自动归入 market_size gap。"""
+        from gap_detector import detect_gaps
+
+        gaps = detect_gaps({
+            "company_name": "Fundraisly",
+            "market_track": "AI 融资代理",
+        })
+
+        self.assertIn("market_size", gaps)
+        self.assertIn("market_size_value", gaps["market_size"])
+        self.assertIn("tam_value", gaps["market_size"])
+
     def test_get_skipped_gap_fields_reports_d_e(self):
         """get_skipped_gap_fields 应报告被跳过的 D/E 类字段"""
         from gap_detector import get_skipped_gap_fields

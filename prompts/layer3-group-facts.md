@@ -22,8 +22,12 @@
 11. team_size — 团队规模（如有）
 12. team_highlight — 团队亮点
 13. funding_info — 融资信息（总金额/最新轮次/估值）
-14. main_product_name — 主产品名
-15. main_product_def — 产品定义（≤50字）
+14. company_achievements — 公司关键成就/里程碑（2-3条中文）
+15. main_product_name — 主产品名
+16. main_product_def — 产品定义（≤50字）
+17. main_product_highlight — 主产品亮点/价值主张（2-3句中文）
+18. other_products — 其他产品或产品线（中文；没有则填 null）
+19. product_pain_points — 产品解决的核心痛点（JSON 数组，2-4条中文）
 
 ## 输出格式
 输出严格 JSON。字段值为 null 表示未找到，不要编造：
@@ -43,7 +47,11 @@
   "team_size": "string | null",
   "team_highlight": "string | null",
   "funding_info": "string | null",
+  "company_achievements": "string | null",
   "main_product_name": "string | null",
-  "main_product_def": "string | null"
+  "main_product_def": "string | null",
+  "main_product_highlight": "string | null",
+  "other_products": "string | null",
+  "product_pain_points": ["string"] | null
 }
 ```

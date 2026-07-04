@@ -117,6 +117,7 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn("_splitRatio: 0.58", layout_js)
         self.assertIn("_renderMarkdownPreview", layout_js)
         self.assertIn("_resolveAssetToken", layout_js)
+        self.assertIn("_ensureMediaTokensInMarkdown", layout_js)
         self.assertIn("{{logo}}", layout_js)
         self.assertIn("{{chart_competitive}}", layout_js)
         self.assertIn("_applyStyleToAllCards", layout_js)
@@ -199,6 +200,12 @@ class StaticContractTests(unittest.TestCase):
         self.assertIn('data-section="text-finalize"', editor_html)
         self.assertIn('data-section="image"', editor_html)
         self.assertIn('id="btn-go-layout"', editor_html)
+        self.assertIn('id="tf-btn-generate-layout-copy"', editor_html)
+        self.assertLess(
+            editor_html.index('id="tf-btn-generate-layout-copy"'),
+            editor_html.index('id="btn-go-layout"'),
+        )
+        self.assertIn('id="layout-copy-progress-modal"', editor_html)
         self.assertIn('class="editor-goto-layout"', editor_html)
         self.assertNotIn('id="editor-middle-pane"', editor_html)
         self.assertNotIn('id="editor-right-pane"', editor_html)
@@ -225,6 +232,17 @@ class StaticContractTests(unittest.TestCase):
         self.assertNotIn('class="version-radio"', editor_html)
         self.assertNotIn('id="markdown-editor"', editor_html)
         self.assertNotIn('id="field-edit-mini"', editor_html)
+
+    def test_layout_copy_route_uses_deepseek_flash_model(self):
+        with open(os.path.join(ROOT, "webapp", "routes", "field_routes.py"), encoding="utf-8") as f:
+            routes_py = f.read()
+
+        start = routes_py.index('@bp.route("/fields/<company>/layout-copy"')
+        end = routes_py.index("return jsonify({\"status\": \"ok\"", start)
+        layout_copy_route = routes_py[start:end]
+
+        self.assertIn("config.DEEPSEEK_FLASH_MODEL", layout_copy_route)
+        self.assertNotIn("model=config.DEEPSEEK_MODEL", layout_copy_route)
 
     def test_failed_research_status_surfaces_error(self):
         with open(os.path.join(ROOT, "webapp", "static", "js", "index.js"), encoding="utf-8") as f:

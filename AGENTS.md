@@ -43,9 +43,9 @@ tests/          — pytest 回归测试（808 passed）
 cd webapp && .venv/bin/python3 app.py
 # Flask 已配置 TEMPLATES_AUTO_RELOAD=True，模板修改后无需重启
 # 访问研究台 http://127.0.0.1:5050/
-# 定稿台 http://127.0.0.1:5050/editor?company=<公司名>&set=v1|v2|v3
+# 定稿台 http://127.0.0.1:5050/editor?company=<公司名>&set=v1|v2|v3|v4
 # 卡片制作台 http://127.0.0.1:5050/canvas/?company=<公司名>
-# 排版中心 http://127.0.0.1:5050/layout?company=<公司名>&set=v1|v2|v3
+# 排版中心 http://127.0.0.1:5050/layout?company=<公司名>&set=v1|v2|v3|v4
 ```
 
 ### 研究一家公司
@@ -112,7 +112,7 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - Tavily 可用 `TAVILY_API_KEYS` 配置逗号分隔的多 Key，额度限制时自动尝试下一个；不要把真实 Key 写进代码、测试、文档或日志
 - Tavily 不作为第一梯队采集源（由 Scrapling + 官网 + GitHub/YouTube 等先跑），只在第一轮采集完成后通过 pre-gap refetch 按阈值自动触发补采。运行时仍走自适应模式：`TAVILY_INITIAL_QUERY_LIMIT=10`（basic）、`TAVILY_CACHE_TTL_SECONDS=86400`；补采触发阈值见下方环境变量
 - 成本目标 < $0.20/次研究
-- 套卡系统（`card_set_key`）：v1 内置 8 张（经典）、v2 内置 7 张（新版）、v3 内置 8 张（研究增强版）。定稿台顶部切换套卡，卡片设置按套卡独立编排，排版中心和导出同步 `?set=` 参数；`canvas/screenshot.js --set` 支持 v1/v2/v3。v1 卡片7/8 为竞争格局+总结；v2 无独立总结卡；v3 走研究报告字段、Markdown/PDF/Notion bundle 导出。L3 prompt 已将壁垒 `moat` 和生态位 `ecosystem_niche` 拆为独立字段
+- 套卡系统（`card_set_key`）：v1 内置 8 张（经典）、v2 内置 7 张（新版）、v3 内置 8 张（研究增强版）、v4 内置 7 张（故事线，默认）。定稿台顶部切换套卡，卡片设置按套卡独立编排，排版中心和导出同步 `?set=` 参数；`canvas/screenshot.js --set` 支持 v1/v2/v3/v4，默认 v4。v1 卡片7/8 为竞争格局+总结；v2 无独立总结卡；v3 走研究报告字段、Markdown/PDF/Notion bundle 导出；v4 故事线7张（封面→赛道→基本面→产品→壁垒→商业模式→增长飞轮）。L3 prompt 已将壁垒 `moat` 和生态位 `ecosystem_niche` 拆为独立字段
 - 研究主流程不依赖 n8n；不要新增 n8n 工作流作为主路径
 - 定稿台主流程：卡片设置 → 文字定稿 → 图片定稿 → 进入排版。旧版内容定稿、钩子文案、数据库字段面板已删除，不再保留兼容入口
 - `hook_paragraph_1/2/3` 是 research 表中的字段（可作普通字段使用），不写入知识卡片
@@ -133,16 +133,18 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 模板制作（/template-maker）：新建/编辑模板，右上角下拉框选择已有模板进行修改。编辑内置模板时自动创建副本（不修改原内置模板）。保存区分新建（POST）和更新（PATCH）
 - chart_competitive/chart_ecosystem 使用本地 ECharts（`webapp/static/vendor/echarts.min.js`）内联渲染为 HTML，通过 `/api/image-studio/.../preview` 实时预览 + Playwright 截图（2x scale，800×600→1600×1200）导出 PNG。v2 改造：0–10 绝对坐标（不做组内归一化）、动态标题给结论。设计规范：light 主题、markArea 象限背景（x=5/y=5 中轴）、目标公司高亮（青色 `#29B8D4` 白边框 2px 固定气泡 22px）、竞品降权（`rgba(27,42,74,0.35)` 14px 气泡）、全员标签展示、ecosystem Y 轴 5 条 category 泳道（分发渠道/垂直应用/中间件层/模型层/基础设施层）+ splitArea 交替背景。前端 workspace-chart.js 只做参数编辑和 iframe 预览，不维护独立的图表逻辑。CSS 不使用 vw/vh（srcdoc iframe 中会坍塌）
 - 排版中心（/layout?company=<公司名>&set=v1|v2|v3）：选中卡片→选择模板→点击图层→右侧属性面板调节位置/尺寸/字体/颜色。画布预览由 iframe 渲染，父页面透明 hitbox 接管图层点击，避免浏览器原生文本选区；选中文字图层后双击高亮区域会在 iframe 内打开 Markdown textarea，可编辑原始 Markdown，提交后写入 layout overrides 并跨渲染保持。模板渲染器支持 Markdown（`#`→h1/`##`→h2/`**`→粗体），文字 region 的 `value` override 优先于原字段内容。
+- 排版文案生成 `POST /api/fields/<company>/layout-copy?set=v4`：两步 LLM——① elsewhere 风格串接字段成3段文字（`prompts/layout-copy.md`）→ ② Humanizer-zh 去AI味（24种中文AI模式，`prompts/humanizer-zh.md`）→ 正则兜底。由 `webapp/services/layout_copy_service.py` 实现。
 - 国内环境访问 Tavily 和 YouTube API 需配 HTTPS_PROXY（在 `.env` 手动配置）。Tavily 使用显式 `proxies=` 传参并支持超时后换 Key；超时配置在 `pipeline.py`
 - Pexels（200 req/h，支持中文）和 Unsplash（50 req/h，英文关键词）API Key 通过环境变量配置，用于图片定稿台手动搜索
 - 图片自动采集不再使用 Lorem Flickr / Picsum 通用图；搜不到真实图片时标记 `failed`，进入图片定稿台手动补
 - 定稿台左侧结构：卡片设置、文字定稿、图片定稿、进入排版。前三个面板点击后占据右侧主区域，互斥切换；「进入排版」是左侧底部固定按钮。旧版内容定稿/钩子文案/数据库字段面板已删除
 - 研究台公司库定稿进度优先读取 `final_fields` 的 confirmed/total 字段数；旧 `final_content` 卡片数仅作兼容回退
 - 研究台要展示 Tavily/GitHub/YouTube/官网抓取的链路状态与数量；公司库点击一条只展开该公司研究信息，点另一条时其他行折叠
-- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集；`COLLECTION_ENABLE_GAP_REFETCH=1`（默认）控制 Tavily pre-gap/L3 补采；`COLLECTION_WEBSITE_SUFFICIENT_CHARS=3000`（默认）官网字符数低于此值触发补采；`COLLECTION_MIN_UNIQUE_URLS=10`（默认）Tavily 唯一 URL 低于此值触发补采；`COLLECTION_MIN_INTENTS=2`（默认）Tavily 意图数低于此值触发补采；`TRANSLATE_ON_COLLECTION=1`（默认）控制采集入库前英→中翻译；`TAVILY_SEARCH_DEPTH=basic`（默认）控制 Tavily 首轮搜索深度，补采轮自动使用 advanced
+- `EVIDENCE_SPAN_BINDING_ENABLED=1`（默认）控制 posthoc 弱证据绑定；`DOCUMENT_CHUNKING_ENABLED=1`（默认）控制文档清洗+切块+打分；`CONTEXT_PACKER_ENABLED=1`（默认）控制 packed_context 打包；`L0_CONTEXT_BUDGET_TOKENS=18000` 控制 L0 输入 token 上限；`POSTHOC_EVIDENCE_WEAK_ONLY=1`（默认）确保事后绑定不得 confirmed；`ORCHESTRATOR_ENABLED=0`（默认）控制多Agent并行采集；`COLLECTION_ENABLE_GAP_REFETCH=1`（默认）控制 Tavily pre-gap/L3 补采；`COLLECTION_WEBSITE_SUFFICIENT_CHARS=1500`（默认）官网字符数低于此值触发补采；`COLLECTION_MIN_UNIQUE_URLS=10`（默认）Tavily 唯一 URL 低于此值触发补采；`COLLECTION_MIN_INTENTS=2`（默认）Tavily 意图数低于此值触发补采；`TRANSLATE_ON_COLLECTION=1`（默认）控制采集入库前英→中翻译；`TAVILY_SEARCH_DEPTH=advanced`（默认）控制 Tavily 首轮搜索深度，补采轮同样使用 advanced；`TAVILY_INCLUDE_RAW_CONTENT=0`（默认）控制 Tavily 是否返回原始网页内容
 - Evidence API（Goal 二新增）：`/api/evidence/company/<company>`、`/api/evidence/field/<company>/<field_key>`、`/api/evidence/candidate/<candidate_id>`；旧 `/api/evidence/<company_key>/<field_key>` 仍可用
 - RenderContract 主出口（Goal 一）：`GET /api/render-data/<company>?set=v3` 返回 `contracts/render_contract.schema.json` 格式的 8 卡结构，由 `webapp/services/render_assembler.py` 组装、`webapp/services/contract_validator.py` 校验
 - `LEGACY_CONTEXT_MODE=1` 显式开关绕过 chunk→rank→pack 治理（仅调试用，默认 0）
+- 必填字段 12 个（`contracts/fields.json` 中 `required: true`）：`company_name`、`company_def`、`market_track`、`market_landscape_summary`、`core_business`、`competitors_top3`、`competitive_position`、`main_product_name`、`founded_date`、`pricing_summary`、`customer_names`、`gtm_strategy`。完整度公式 `0.35*source + 0.20*evidence + 0.45*(filled/12)`，阈值 ≥85%（`RESEARCH_COMPLETENESS_MIN`）。L3 gap refetch 最多8条 Tavily 查询覆盖缺失字段
 
 ## 技术约束（补充）
 
@@ -157,9 +159,8 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - Scrapling 需要 Python ≥ 3.10；用 `.venv/bin/python3`（3.12）启动 Flask，不要用系统 python3（3.9）。官网抓取 403 时除 Scrapling 级联外还增加直接 Playwright fallback（`_collect_with_playwright`）
 - 新增 ADAPTER_HARD_TIMEOUT_SECONDS 环境变量（默认 120），可在 .env 覆盖为 300
 
-### Tavily 两阶段搜索
-- 首轮使用 `basic` 深度（`TAVILY_SEARCH_DEPTH=basic` 或 `TAVILY_INITIAL_SEARCH_DEPTH`）
-- 补采轮（pre-gap refetch + L3 gap refetch）自动使用 `advanced` 深度，带 `search_depth: "advanced"` 参数
+### Tavily 搜索
+- 首轮和补采轮均使用 `advanced` 深度（`TAVILY_SEARCH_DEPTH=advanced`）。补采轮（pre-gap refetch + L3 gap refetch）显式传 `search_depth: "advanced"` 参数
 - Tavily 4 种模式：`ultra-fast` | `fast` | `basic` | `advanced`；`deep` 是 `advanced` 别名
 
 ### 采集时翻译
@@ -201,5 +202,6 @@ sqlite3 db/template_db.sqlite < db/init_template_db.sql
 - 深度优化计划：`docs/superpowers/plans/2026-06-22-depth-optimization-plan.md`
 - 字段→采集方法映射：`references/field_acquisition_map.json`（N:N，117字段×15采集方法）
 - v3 卡片字段配置：`contracts/card_sets/v3.json` + `db/init_composition_db.sql`（default_card_configs）保持一致。v3_card_07 含 5 字段：`growth_strategy`、`cold_start`（2026-06-27 取消 deprecated）、`gtm_strategy`、`growth_flywheel`、`acquisition_channels`
+- v4 故事线7张：`contracts/card_sets/v4.json`，模板定义在 `db/init_template_db.sql`（cover_v3 + 6个storyline_*_v4）
 - display_role 默认值：`webapp/services/role_defaults.py`（共享模块，card_config_service + render_assembler + card_config_repo 共用）
 - 公司列表发现：`get_companies()` 从三个来源发现公司——`research` 宽表 + `research_fields` 表 + `research_jobs` 表（兜底已完成但字段未写入 research_fields 的研究）

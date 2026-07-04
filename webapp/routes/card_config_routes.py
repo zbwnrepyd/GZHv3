@@ -28,7 +28,7 @@ def _get_set_key() -> str:
                 return sk
         except Exception:
             pass
-    return "v1"
+    return config.DEFAULT_CARD_SET_KEY
 
 
 def register(bp: Blueprint):

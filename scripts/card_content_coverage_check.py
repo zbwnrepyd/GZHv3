@@ -17,6 +17,16 @@ sys.path.insert(0, os.path.join(_SCRIPT_DIR, '..'))
 from webapp.services.render_assembler import RenderAssembler
 
 
+PLACEHOLDER_VALUES = {'', '暂缺', '待研究数据', 'None', 'none', 'null', 'NULL', '[]', '{}'}
+MIN_VALUE_COVERAGE_RATIO = 0.85
+
+
+def _has_renderable_value(value) -> bool:
+    if value is None:
+        return False
+    return str(value).strip() not in PLACEHOLDER_VALUES
+
+
 def check_card_coverage(company: str, card_set: str = 'v3') -> dict:
     """Run coverage check against a company's RenderContract.
 
@@ -29,6 +39,7 @@ def check_card_coverage(company: str, card_set: str = 'v3') -> dict:
     cards_with_items = 0
     total_fields = 0
     fields_resolved = 0
+    fields_with_values = 0
     cards_with_layout = 0
 
     for card in cards:
@@ -52,7 +63,9 @@ def check_card_coverage(company: str, card_set: str = 'v3') -> dict:
             total_fields += 1
             fk = item.get('field_key', '?')
             status = item.get('status', 'draft')
-            if status in ('confirmed', 'derived', 'proxy', 'llm_extracted', 'manual_needed'):
+            if _has_renderable_value(item.get('value')):
+                fields_with_values += 1
+            if status in ('confirmed', 'derived', 'proxy', 'industry_avg', 'llm_extracted', 'manual_needed'):
                 fields_resolved += 1
             elif status in ('unavailable', 'not_applicable'):
                 pass  # Legitimately unavailable — not a failure
@@ -86,6 +99,13 @@ def check_card_coverage(company: str, card_set: str = 'v3') -> dict:
                 'detail': 'Layout missing template_id or variant',
             })
 
+    value_coverage_ratio = round(fields_with_values / total_fields, 4) if total_fields else 0.0
+    if total_fields and value_coverage_ratio < MIN_VALUE_COVERAGE_RATIO:
+        failures.append({
+            'issue': 'low_value_coverage',
+            'detail': f"Value coverage {value_coverage_ratio:.1%} is below {MIN_VALUE_COVERAGE_RATIO:.0%}",
+        })
+
     ok = len(failures) == 0 and len(cards) > 0
     return {
         'ok': ok,
@@ -96,6 +116,8 @@ def check_card_coverage(company: str, card_set: str = 'v3') -> dict:
             'cards_with_items': cards_with_items,
             'total_fields': total_fields,
             'fields_resolved': fields_resolved,
+            'fields_with_values': fields_with_values,
+            'value_coverage_ratio': value_coverage_ratio,
             'cards_with_complete_layout': cards_with_layout,
         },
         'failures': failures,

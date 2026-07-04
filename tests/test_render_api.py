@@ -48,13 +48,13 @@ class TestRenderApi:
         assert len(data['cards']) == 8, "Should return 8 default cards"
         assert data['card_set'] == 'v3'
 
-    def test_render_api_defaults_to_v1_when_no_set(self, client):
-        """API defaults to v1 (backward compatible) when ?set is missing."""
-        resp = client.get('/api/render-data/Anthropic')
+    def test_render_api_defaults_to_v4_when_no_set(self, client):
+        """API defaults to v4 when ?set is missing."""
+        resp = client.get('/api/render-data/DefaultV4CompanyDoesNotExist')
         assert resp.status_code == 200
         data = resp.get_json()
-        assert 'cards' in data
-        assert len(data['cards']) > 0
+        assert data['card_set'] == 'v4'
+        assert len(data['cards']) == 7
 
     def test_render_api_returns_v3_with_explicit_set(self, client):
         """API returns v3 RenderContract when ?set=v3."""
@@ -63,6 +63,16 @@ class TestRenderApi:
         data = resp.get_json()
         assert data['card_set'] == 'v3'
         assert len(data['cards']) == 8
+
+    def test_render_api_returns_v4_storyline_contract(self, client):
+        """API returns v4 RenderContract with cover plus the 6-page story-line set."""
+        resp = client.get('/api/render-data/NonExistentV4StorylineCompany?set=v4')
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data['card_set'] == 'v4'
+        assert len(data['cards']) == 7
+        assert data['cards'][0]['card_id'] == 'v4_card_01'
+        assert [item['field_key'] for item in data['cards'][0]['items']] == ['company_name', 'company_type']
 
     def test_v3_card_07_no_daishu_data_in_values(self, client):
         """"待研究数据" 不应出现在 v3_card_07 的可展示 value 中。"""

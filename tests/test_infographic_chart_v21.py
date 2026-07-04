@@ -279,6 +279,87 @@ class EcosystemChartV2Tests(unittest.TestCase):
         self.assertIn("symbolSize", html)
         self.assertIn("is_highlight", html)
 
+    def test_focus_lane_keeps_target_position_and_dims_compressed_other_lanes(self):
+        html = build_stack_positioning_svg([
+            {"company_name": "TestCo", "score_value_capture": 7, "stack_layer": "middleware", "funding_stage_score": 9},
+            {"company_name": "TopLane", "score_value_capture": 4, "stack_layer": "distribution", "funding_stage_score": 1},
+            {"company_name": "BottomLane", "score_value_capture": 3, "stack_layer": "infrastructure", "funding_stage_score": 1},
+        ], "TestCo", {"theme": "light"})
+        opt_start = html.find("var series=")
+        opt_section = html[opt_start:] if opt_start > 0 else html
+
+        self.assertIn('"name": "TestCo", "value": [7.0, 2.0]', opt_section)
+        self.assertIn('"name": "TopLane", "value": [4.0, 0.475]', opt_section)
+        self.assertIn('"name": "BottomLane", "value": [3.0, 3.525]', opt_section)
+        self.assertIn('focusLaneIndex=2', opt_section)
+        self.assertIn('rgba(148,163,184,0.40)', opt_section)
+
+    def test_focus_lane_layout_uses_continuous_bands_without_white_gaps(self):
+        html = build_stack_positioning_svg([
+            {"company_name": "TestCo", "score_value_capture": 7, "stack_layer": "middleware", "funding_stage_score": 9},
+            {"company_name": "TopLane", "score_value_capture": 4, "stack_layer": "distribution", "funding_stage_score": 1},
+            {"company_name": "BottomLane", "score_value_capture": 3, "stack_layer": "infrastructure", "funding_stage_score": 1},
+        ], "TestCo", {"theme": "light"})
+        opt_start = html.find("var series=")
+        opt_section = html[opt_start:] if opt_start > 0 else html
+
+        self.assertIn('"start": 0.2, "end": 0.75', opt_section)
+        self.assertIn('"start": 0.75, "end": 1.3', opt_section)
+        self.assertIn('"start": 1.3, "end": 2.7', opt_section)
+        self.assertIn('"start": 2.7, "end": 3.25', opt_section)
+        self.assertIn('"start": 3.25, "end": 3.8', opt_section)
+        self.assertIn('type:"value",min:0.2,max:3.8', opt_section)
+
+    def test_focus_lane_is_wider_and_other_lanes_have_equal_height(self):
+        html = build_stack_positioning_svg([
+            {"company_name": "TestCo", "score_value_capture": 7, "stack_layer": "middleware", "funding_stage_score": 9},
+            {"company_name": "TopLane", "score_value_capture": 4, "stack_layer": "distribution", "funding_stage_score": 1},
+            {"company_name": "BottomLane", "score_value_capture": 3, "stack_layer": "infrastructure", "funding_stage_score": 1},
+        ], "TestCo", {"theme": "light"})
+        opt_start = html.find("var series=")
+        opt_section = html[opt_start:] if opt_start > 0 else html
+
+        self.assertIn('"height": 0.55', opt_section)
+        self.assertIn('"height": 1.4', opt_section)
+        self.assertIn('"name": "TopLane", "value": [4.0, 0.475]', opt_section)
+        self.assertIn('"name": "TestCo", "value": [7.0, 2.0]', opt_section)
+        self.assertIn('"name": "BottomLane", "value": [3.0, 3.525]', opt_section)
+
+    def test_lane_names_use_left_graphic_labels_and_fonts_are_doubled(self):
+        html = build_stack_positioning_svg([
+            {"company_name": "TestCo", "score_value_capture": 7, "stack_layer": "middleware", "funding_stage_score": 9},
+        ], "TestCo", {"theme": "light", "title_size": 16, "axis_size": 12, "label_size": 13})
+        opt_start = html.find("var series=")
+        opt_section = html[opt_start:] if opt_start > 0 else html
+
+        self.assertIn("laneLabels.map", opt_section)
+        self.assertIn('fontSize:26', opt_section)
+        self.assertIn('fontSize:24', opt_section)
+        self.assertIn('fontSize:32', opt_section)
+        self.assertIn('axisLabel:{show:false}', opt_section)
+        self.assertIn('left:18', opt_section)
+
+    def test_focus_lane_competitor_labels_move_away_from_target_label(self):
+        html = build_stack_positioning_svg([
+            {"company_name": "TestCo", "score_value_capture": 7, "stack_layer": "middleware", "funding_stage_score": 9},
+            {"company_name": "OtherCo", "score_value_capture": 6, "stack_layer": "middleware", "funding_stage_score": 5},
+            {"company_name": "UpperCo", "score_value_capture": 5, "stack_layer": "vertical_app", "funding_stage_score": 5},
+            {"company_name": "LowerCo", "score_value_capture": 5, "stack_layer": "foundation_model", "funding_stage_score": 5},
+        ], "TestCo", {"theme": "light"})
+        opt_start = html.find("var series=")
+        opt_section = html[opt_start:] if opt_start > 0 else html
+
+        self.assertIn('"name": "TestCo"', opt_section)
+        self.assertIn('"label": {"position": "right", "distance": 14}', opt_section)
+        self.assertIn('"name": "OtherCo"', opt_section)
+        self.assertIn('"label": {"position": "left", "distance": 14}', opt_section)
+        self.assertIn('"name": "UpperCo"', opt_section)
+        self.assertIn('"label": {"position": "top", "distance": 12}', opt_section)
+        self.assertIn('"name": "LowerCo"', opt_section)
+        self.assertIn('"label": {"position": "bottom", "distance": 12}', opt_section)
+        self.assertIn('labelLayout:{hideOverlap:true,moveOverlap:"shiftY"}', opt_section)
+        self.assertIn('opt.series.push({type:"scatter",data:[],z:-10', opt_section)
+
 
 class FlywheelTemplateTests(unittest.TestCase):
     def test_circular_flywheel_wraps_long_stage_text(self):

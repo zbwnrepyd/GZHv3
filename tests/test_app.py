@@ -459,6 +459,60 @@ class ImageRouteTests(unittest.TestCase):
         self.assertEqual(variants[0]["source_type"], "api_generate")
         self.assertEqual(variants[0]["is_selected"], 1)
 
+    def test_collect_assets_uses_research_fields_when_wide_row_missing(self):
+        research_db_path = init_sqlite("init_research_db.sql")
+        asset_store.init_assets_db(self.assets_db_path)
+        self.addCleanup(lambda: os.path.exists(research_db_path) and os.remove(research_db_path))
+        old_research = app_module.config.DB_PATH_RESEARCH
+        app_module.config.DB_PATH_RESEARCH = research_db_path
+        self.addCleanup(lambda: setattr(app_module.config, "DB_PATH_RESEARCH", old_research))
+
+        with sqlite3.connect(research_db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS research_fields (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_name TEXT NOT NULL,
+                    company_key TEXT DEFAULT '',
+                    version TEXT DEFAULT 'standard',
+                    field_key TEXT NOT NULL,
+                    field_value TEXT,
+                    resolution_status TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.executemany(
+                """
+                INSERT INTO research_fields
+                    (company_name, company_key, version, field_key, field_value, resolution_status)
+                VALUES ('FieldOnlyCo', 'field.ai', 'standard', ?, ?, 'confirmed')
+                """,
+                [
+                    ("website_url", "https://field.ai"),
+                    ("founder_name", "Ada Founder"),
+                    ("location", "San Francisco"),
+                ],
+            )
+
+        captured = {}
+
+        def fake_collect(_db_path, _images_root, company_name, company_data, company_key=""):
+            captured["company_name"] = company_name
+            captured["company_key"] = company_key
+            captured["company_data"] = company_data
+            return 1
+
+        with patch.object(asset_pipeline, "_collect_founder_photo_variants", side_effect=fake_collect):
+            response = self.client.post("/api/assets/collect/FieldOnlyCo?asset_key=founder_photo")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["company_name"], "FieldOnlyCo")
+        self.assertEqual(captured["company_key"], "field.ai")
+        self.assertEqual(captured["company_data"]["founder_name"], "Ada Founder")
+        self.assertEqual(captured["company_data"]["website_url"], "https://field.ai")
+
     def test_variants_endpoint_returns_scored_variants(self):
         asset_store.insert_variant(
             self.assets_db_path,
@@ -491,6 +545,33 @@ class ImageRouteTests(unittest.TestCase):
             "competitors", "competitors_logo_strip",
             "chart_competitive", "chart_ecosystem", "flywheel",
         ])
+
+    def test_competitors_slot_hides_chart_asset_mismatch(self):
+        asset_store.ensure_assets_rows(self.assets_db_path, "DemoCo")
+        with sqlite3.connect(self.assets_db_path) as conn:
+            conn.execute(
+                """UPDATE company_assets
+                   SET local_path=?, source_type=?, status='ready', selected_variant_id=123
+                   WHERE company_name='DemoCo' AND asset_key='competitors'""",
+                ("/images/DemoCo/variants/chart_competitive__bad.png", "derived_from_chart_competitive"),
+            )
+            conn.execute(
+                """INSERT INTO image_variants
+                   (company_name, asset_key, local_path, source_type, is_selected)
+                   VALUES ('DemoCo', 'competitors', ?, 'derived_from_chart_competitive', 1)""",
+                ("/images/DemoCo/variants/chart_competitive__bad.png",),
+            )
+
+        asset = asset_store.get_asset(self.assets_db_path, "DemoCo", "competitors")
+        variants = asset_store.list_variants(self.assets_db_path, "DemoCo", "competitors")
+        response = self.client.get("/api/image-studio/DemoCo")
+        slot = next(s for s in response.get_json()["slots"] if s["asset_key"] == "competitors")
+
+        self.assertEqual(asset["local_path"], "")
+        self.assertEqual(asset["status"], "failed")
+        self.assertEqual(variants, [])
+        self.assertEqual(slot["local_path"], "")
+        self.assertEqual(slot["variant_count"], 0)
 
     def test_resolved_assets_flattens_card_assets_and_prefers_selected_variant(self):
         asset_store.ensure_assets_rows(self.assets_db_path, "DemoCo")
@@ -743,6 +824,30 @@ class AssetPathSafetyTests(unittest.TestCase):
             self.assertEqual(os.path.commonpath([root, os.path.abspath(dest)]), root)
             self.assertNotIn("..", os.path.relpath(dest, root))
             self.assertIn("Bad_Co", dest)
+
+    def test_collect_logo_keeps_company_key_path_consistent(self):
+        assets_db_path = init_sqlite("init_assets_db.sql")
+        asset_store.init_assets_db(assets_db_path)
+        self.addCleanup(lambda: os.path.exists(assets_db_path) and os.remove(assets_db_path))
+
+        def fake_download(_url, dest, timeout=15):
+            Image.new("RGBA", (180, 180), (41, 184, 212, 255)).save(dest)
+            return True
+
+        with tempfile.TemporaryDirectory() as images_root:
+            with patch.object(asset_pipeline, "_extract_logo_from_website", return_value="https://demo.ai/logo.png"), \
+                 patch.object(asset_pipeline, "_download", side_effect=fake_download):
+                asset_pipeline.collect_logo(
+                    assets_db_path,
+                    images_root,
+                    "DemoCo",
+                    company_url="https://demo.ai",
+                    company_key="demo.ai",
+                )
+
+            asset = asset_store.get_asset(assets_db_path, "DemoCo", "logo", company_key="demo.ai")
+            self.assertEqual(asset["local_path"], "/images/demo.ai/variants/logo_web.png")
+            self.assertTrue(os.path.exists(os.path.join(images_root, "demo.ai", "variants", "logo_web.png")))
 
     def test_collection_pipeline_selects_first_ready_variant(self):
         assets_db_path = init_sqlite("init_assets_db.sql")

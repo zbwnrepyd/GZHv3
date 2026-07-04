@@ -37,6 +37,7 @@ screenshots/
 # Claude Code
 .claude/
 .superpowers/
+.playwright-cli/
 
 # n8n local data
 .n8n-data/

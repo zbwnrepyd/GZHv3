@@ -88,7 +88,7 @@ const API = {
       body: JSON.stringify({
         company_name: companyName,
         card_index: cardIndex,
-        card_set_key: cardSetKey || 'v1',
+        card_set_key: cardSetKey || 'v4',
         fields: fields,
         img_paths: imgPaths || {}
       })
@@ -104,7 +104,7 @@ const API = {
       body: JSON.stringify({
         company_name: companyName,
         card_index: cardIndex,
-        card_set_key: cardSetKey || 'v1',
+        card_set_key: cardSetKey || 'v4',
         markdown_content: markdownContent
       })
     });

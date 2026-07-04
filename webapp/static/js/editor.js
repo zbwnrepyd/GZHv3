@@ -14,10 +14,11 @@ const SLOT_LABELS = {
 };
 
 const SLOT_ORDER = ['logo', 'website_screenshot', 'founder_photo', 'product_main', 'competitors', 'competitors_logo_strip', 'chart_competitive', 'chart_ecosystem', 'flywheel'];
+const DEFAULT_CARD_SET_KEY = 'v4';
 
 const EditorApp = {
   companyName: '',
-  currentSetKey: 'v1',
+  currentSetKey: DEFAULT_CARD_SET_KEY,
   _cardSets: [],
   currentSection: 'card-settings',
   _imageIframeLoaded: false,
@@ -27,7 +28,7 @@ const EditorApp = {
   async init() {
     const params = new URLSearchParams(window.location.search);
     this.companyName = params.get('company') || '';
-    this.currentSetKey = params.get('set') || 'v1';
+    this.currentSetKey = params.get('set') || DEFAULT_CARD_SET_KEY;
     this.bindEvents();
     if (!this.companyName) {
       document.getElementById('editor-company-label').textContent = '请从研究台选择公司进入定稿台';
@@ -87,6 +88,15 @@ const EditorApp = {
     if (addBtn) addBtn.addEventListener('click', () => this.showNewCardSetModal());
   },
 
+  getCardCount(setKey = this.currentSetKey) {
+    const cardSet = (this._cardSets || []).find(s => s.set_key === setKey);
+    const count = Number(cardSet && cardSet.card_count);
+    if (count > 0) return count;
+    if (setKey === 'v2') return 7;
+    if (setKey === 'v4') return 7;
+    return 8;
+  },
+
   async switchCardSet(setKey) {
     // 自动初始化编排结构
     try {
@@ -133,8 +143,8 @@ const EditorApp = {
       await API.deleteCardSet(setKey);
       await this.loadCardSets();
       if (this.currentSetKey === setKey) {
-        this.currentSetKey = 'v1';
-        await this.switchCardSet('v1');
+        this.currentSetKey = DEFAULT_CARD_SET_KEY;
+        await this.switchCardSet(DEFAULT_CARD_SET_KEY);
       } else {
         this.renderCardSetSelector();
       }

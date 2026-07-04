@@ -16,7 +16,7 @@ const CardSettingsPanel = {
   },
 
   /* ── 数据加载 ── */
-  _setKey() { return EditorApp.currentSetKey || 'v1'; },
+  _setKey() { return EditorApp.currentSetKey || 'v4'; },
 
   async _loadCards() {
     try {
@@ -339,8 +339,8 @@ const CardSettingsPanel = {
   },
 
   async _restoreDefaults() {
-    const setKey = EditorApp.currentSetKey || 'v1';
-    const count = setKey === 'v2' ? 7 : 8;
+    const setKey = EditorApp.currentSetKey || 'v4';
+    const count = typeof EditorApp.getCardCount === 'function' ? EditorApp.getCardCount(setKey) : (setKey === 'v2' ? 7 : 8);
     if (!confirm(`确定恢复套卡「${setKey}」的默认 ${count} 张卡片？当前编排将被清除。`)) return;
     try {
       // 删除所有现有卡片

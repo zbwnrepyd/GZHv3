@@ -22,11 +22,14 @@ const TextFinalizePanel = {
   _cards: [],
   _fieldsByKey: {},       // field_key → { label, versions, final_value, status }
   _activeCardId: null,
+  _layoutCopyButtonBound: false,
+  _layoutCopyGenerating: false,
+  _cardSetKey: '',
 
   async init(company) {
-    if (this._loaded && this._company === company) return;
+    const sameCompany = this._company === company;
     this._company = company;
-    this._activeCardId = null;
+    if (!sameCompany) this._activeCardId = null;
     await Promise.all([this._loadCards(), this._loadFields()]);
     this._render();
     this._loaded = true;
@@ -34,7 +37,8 @@ const TextFinalizePanel = {
 
   async _loadCards() {
     try {
-      const sk = EditorApp.currentSetKey || 'v1';
+      const sk = EditorApp.currentSetKey || 'v4';
+      this._cardSetKey = sk;
       const r = await fetch(`/api/card-config/${encodeURIComponent(this._company)}?set=${sk}`);
       const d = await r.json();
       this._cards = (d.cards || []).filter(c => c.enabled !== false);
@@ -66,6 +70,7 @@ const TextFinalizePanel = {
 
     if (!this._cards.length) {
       root.innerHTML = '<div class="tf-empty-state">暂无卡片编排数据，请先在「卡片设置」中配置卡片</div>';
+      this._syncLayoutCopyButton();
       return;
     }
 
@@ -74,8 +79,9 @@ const TextFinalizePanel = {
       this._activeCardId = this._cards[0].card_id;
     }
 
-    const confirmedCount = Object.values(this._fieldsByKey).filter(f => f.status === 'confirmed').length;
-    const totalCount = Object.keys(this._fieldsByKey).length;
+    const readiness = this._layoutCopyReadiness();
+    const confirmedCount = readiness.confirmedCount;
+    const totalCount = readiness.totalCount;
 
     root.innerHTML = `
       <div class="tf-top-bar">
@@ -97,7 +103,40 @@ const TextFinalizePanel = {
         this._render();
       });
     });
+    this._bindLayoutCopyButton();
+    this._syncLayoutCopyButton();
     this._bindRowEvents();
+  },
+
+  _bindLayoutCopyButton() {
+    if (this._layoutCopyButtonBound) return;
+    const btn = document.getElementById('tf-btn-generate-layout-copy');
+    if (!btn) return;
+    btn.addEventListener('click', () => this._generateLayoutCopy());
+    this._layoutCopyButtonBound = true;
+  },
+
+  _layoutCopyReadiness() {
+    const visibleKeys = this._visibleFieldKeys();
+    const confirmedCount = visibleKeys.filter(k => (this._fieldsByKey[k] || {}).status === 'confirmed').length;
+    const totalCount = visibleKeys.length;
+    return {
+      confirmedCount,
+      totalCount,
+      allConfirmed: totalCount > 0 && confirmedCount === totalCount,
+    };
+  },
+
+  _syncLayoutCopyButton() {
+    this._bindLayoutCopyButton();
+    const btn = document.getElementById('tf-btn-generate-layout-copy');
+    if (!btn) return;
+    const readiness = this._layoutCopyReadiness();
+    btn.disabled = this._layoutCopyGenerating;
+    btn.textContent = readiness.allConfirmed ? '生成排版文案' : '等待文字定稿';
+    btn.title = readiness.totalCount
+      ? `${readiness.confirmedCount}/${readiness.totalCount} 已定稿，全部完成后可生成排版文案`
+      : '点击后会先检查当前套卡文字定稿状态';
   },
 
   _cardTab(card) {
@@ -203,6 +242,33 @@ const TextFinalizePanel = {
     return Object.values(f.versions || {}).some(v => this._isUsableValue(v));
   },
 
+  _visibleFieldKeys() {
+    const keys = [];
+    const seen = new Set();
+    (this._cards || []).forEach(card => {
+      (card.items || []).forEach(item => {
+        if (item.item_type !== 'field') return;
+        const key = item.item_key;
+        if (!key || seen.has(key)) return;
+        if (!this._hasUsableField(key)) return;
+        seen.add(key);
+        keys.push(key);
+      });
+    });
+    return keys;
+  },
+
+  _bestValueForField(fieldKey) {
+    const f = this._fieldsByKey[fieldKey] || {};
+    if (this._isUsableValue(f.final_value)) return String(f.final_value).trim();
+    const versions = f.versions || {};
+    for (const ver of ['standard', 'business', 'spread']) {
+      if (this._isUsableValue(versions[ver])) return String(versions[ver]).trim();
+    }
+    const any = Object.values(versions).find(v => this._isUsableValue(v));
+    return any ? String(any).trim() : '';
+  },
+
   _isUsableValue(value) {
     if (value === null || value === undefined) return false;
     const s = String(value).trim();
@@ -233,8 +299,8 @@ const TextFinalizePanel = {
         body: JSON.stringify({ final_value: value, status: 'confirmed' }),
       });
       if (r.ok) {
-        this._fieldsByKey[fieldKey].final_value = value;
-        this._fieldsByKey[fieldKey].status = 'confirmed';
+        await this._loadFields();
+        await EditorApp.loadStatus?.();
         textarea.classList.remove('dirty');
         this._render();
       }
@@ -245,6 +311,10 @@ const TextFinalizePanel = {
     if (!confirm('确定将所有已填写的字段标记为已定稿？')) return;
     try {
       const fieldValues = {};
+      this._visibleFieldKeys().forEach(key => {
+        const value = this._bestValueForField(key);
+        if (value) fieldValues[key] = value;
+      });
       document.querySelectorAll('.tf-final-input').forEach(ta => {
         const key = ta.dataset.field;
         if (key && ta.value.trim()) fieldValues[key] = ta.value.trim();
@@ -254,10 +324,101 @@ const TextFinalizePanel = {
         body: JSON.stringify({ field_values: fieldValues }),
       });
       await this._loadFields();
+      await EditorApp.loadStatus?.();
       this._render();
     } catch (e) { alert('保存失败: ' + e.message); }
+  },
+
+  async _generateLayoutCopy() {
+    const btn = document.getElementById('tf-btn-generate-layout-copy');
+    if (!btn || this._layoutCopyGenerating) return;
+    this._company = this._company || EditorApp.companyName || '';
+    if (!this._company) return;
+    const original = btn.textContent;
+    this._layoutCopyGenerating = true;
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+    this._openLayoutCopyModal();
+    this._setLayoutCopyStep('check', 'active', '正在检查当前套卡字段');
+    this._setLayoutCopyMessage('正在检查文字定稿状态。');
+    try {
+      const sk = EditorApp.currentSetKey || 'v4';
+      if (this._cardSetKey !== sk || !this._cards.length || !Object.keys(this._fieldsByKey).length) {
+        await Promise.all([this._loadCards(), this._loadFields()]);
+      }
+      const readiness = this._layoutCopyReadiness();
+      if (!readiness.allConfirmed) {
+        this._setLayoutCopyStep('check', 'error', `${readiness.confirmedCount}/${readiness.totalCount} 已定稿`);
+        this._setLayoutCopyMessage('文字定稿尚未全部完成，生成已停止。请先完成所有当前套卡字段定稿。', true);
+        this._syncLayoutCopyButton();
+        return;
+      }
+      this._setLayoutCopyStep('check', 'done', `${readiness.totalCount}/${readiness.totalCount} 已定稿`);
+      this._setLayoutCopyStep('compose', 'active', '服务端正在串联每页事实');
+      this._setLayoutCopyMessage('正在调用 AI 生成每页三段文案。当前后端是单次请求，细分进度将在请求返回后更新。');
+      const r = await fetch(`/api/fields/${encodeURIComponent(this._company)}/layout-copy?set=${encodeURIComponent(sk)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ card_set_key: sk }),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      this._setLayoutCopyStep('compose', 'done', '已生成三段文案');
+      this._setLayoutCopyStep('write', 'done', `已写入 ${data.cards?.length || 0} 页`);
+      this._setLayoutCopyStep('done', 'done', '可进入排版中心');
+      this._setLayoutCopyMessage(`已生成 ${data.cards?.length || 0} 页排版文案，并写入排版中心。`);
+      this._showLayoutCopyGoAction();
+    } catch (e) {
+      this._setLayoutCopyStep('compose', 'error', '生成失败');
+      this._setLayoutCopyMessage('生成失败: ' + e.message, true);
+    } finally {
+      this._layoutCopyGenerating = false;
+      btn.textContent = original;
+      this._syncLayoutCopyButton();
+    }
+  },
+
+  _openLayoutCopyModal() {
+    const modal = document.getElementById('layout-copy-progress-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.querySelectorAll('[data-layout-copy-close]').forEach(btn => {
+      if (btn.dataset.bound === '1') return;
+      btn.addEventListener('click', () => modal.classList.add('hidden'));
+      btn.dataset.bound = '1';
+    });
+    document.getElementById('layout-copy-progress-go')?.classList.add('hidden');
+    ['check', 'compose', 'write', 'done'].forEach(step => {
+      this._setLayoutCopyStep(step, 'pending', '等待开始');
+    });
+  },
+
+  _setLayoutCopyStep(step, state, detail) {
+    const item = document.querySelector(`#layout-copy-progress-modal [data-step="${step}"]`);
+    if (!item) return;
+    item.classList.remove('pending', 'active', 'done', 'error');
+    item.classList.add(state);
+    const small = item.querySelector('small');
+    if (small) small.textContent = detail || '';
+  },
+
+  _setLayoutCopyMessage(message, isError = false) {
+    const el = document.getElementById('layout-copy-progress-message');
+    if (!el) return;
+    el.textContent = message;
+    el.classList.toggle('error', Boolean(isError));
+  },
+
+  _showLayoutCopyGoAction() {
+    const go = document.getElementById('layout-copy-progress-go');
+    const layout = document.getElementById('btn-go-layout');
+    if (!go || !layout) return;
+    go.href = layout.href || '#';
+    go.classList.remove('hidden');
   },
 
   _esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
   _escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
 };
+
+document.addEventListener('DOMContentLoaded', () => TextFinalizePanel._bindLayoutCopyButton());

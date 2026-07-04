@@ -3,7 +3,7 @@
 const LayoutApp = {
   _assetTokenExamples: '{{logo}} {{founder_photo}} {{chart_competitive}}',
   _company: '',
-  _setKey: 'v1',
+  _setKey: 'v4',
   _data: null,
   _cards: [],
   _templates: [],
@@ -31,7 +31,7 @@ const LayoutApp = {
   async init() {
     const p = new URLSearchParams(window.location.search);
     this._company = p.get('company') || '';
-    this._setKey = p.get('set') || 'v1';
+    this._setKey = p.get('set') || 'v4';
     if (!this._company) {
       document.getElementById('canvas-area').innerHTML = '<div class="empty-state">缺少 ?company= 参数</div>';
       return;
@@ -105,7 +105,8 @@ const LayoutApp = {
           }
         });
         const layout = card.layout || {};
-        this._markdownByCard[card.card_id] = layout.markdown || this._defaultMarkdownForCard(card) || this._markdownFromCard(card);
+        const markdown = layout.markdown || this._defaultMarkdownForCard(card) || this._markdownFromCard(card);
+        this._markdownByCard[card.card_id] = this._ensureMediaTokensInMarkdown(markdown, card);
         this._styleByCard[card.card_id] = {
           ...this._defaultStyle,
           ...(layout.style || this._styleFromTemplate(card.template)),
@@ -271,6 +272,18 @@ const LayoutApp = {
     const present = keys => keys.map(key => fields[key]).filter(Boolean);
     const heading = title => `<span style="display:block;text-align:left;font-size:50px"># ${title}</span>`;
 
+    if (card.template_id === 'cover_ai_observation_v4' || card.template?.style_defaults?.skin === 'ai_observation_cover') {
+      const name = fields.company_name || this._company || card.card_title || '';
+      const type = fields.company_type || '';
+      return [
+        '<span style="display:block;text-align:left;font-size:30px">## 各赛道AI初创公司观察之</span>',
+        `<span style="display:block;text-align:left;font-size:88px"># ${this._esc(name)}</span>`,
+        type ? `<span style="display:block;text-align:left;font-size:28px">${this._esc(type)}</span>` : '',
+        '---',
+        '<span style="display:block;text-align:left;font-size:20px">AI COMPANY DOSSIER</span>',
+      ].filter(line => line !== '').join('\n\n');
+    }
+
     if (card.card_id === 'v2_card_01' || Number(card.card_index) === 1) {
       const name = fields.company_name || this._company || card.card_title || '';
       const type = fields.company_type || '';
@@ -302,18 +315,37 @@ const LayoutApp = {
       .replace(/\n{5,}/g, '\n\n\n');
   },
 
+  _ensureMediaTokensInMarkdown(markdown, card) {
+    const text = String(markdown || '').trim();
+    if (card?.template_id === 'cover_ai_observation_v4' || card?.template?.style_defaults?.skin === 'ai_observation_cover') {
+      return text.replace(/\n*\{\{logo\}\}\n*/g, '\n\n').replace(/\n{4,}/g, '\n\n\n').trim();
+    }
+    const media = (card?.items || []).filter(item => item.item_type === 'media' && item.item_key && item.url);
+    if (!media.length) return text;
+    if (/\{\{[a-zA-Z0-9_:-]+\}\}/.test(text)) return text;
+    const tokens = media.map(item => `{{${item.item_key}}}`);
+    const blocks = text ? text.split(/\n{2,}/).map(block => block.trim()).filter(Boolean) : [];
+    const insertAt = blocks.length ? 1 : 0;
+    blocks.splice(insertAt, 0, ...tokens);
+    return blocks.join('\n\n');
+  },
+
   _styleFromTemplate(template) {
     const style = {};
+    if (template?.style_defaults && typeof template.style_defaults === 'object') {
+      Object.assign(style, template.style_defaults);
+    }
     const regions = template?.regions || [];
     const bodyRegion = regions.find(r => r.type === 'text' && (r.role || 'body') === 'body') ||
       regions.find(r => r.type === 'text');
-    if (bodyRegion?.style?.fontSize) style.fontSize = bodyRegion.style.fontSize;
-    if (bodyRegion?.style?.lineHeight) style.lineHeight = bodyRegion.style.lineHeight;
+    if (bodyRegion?.style?.fontSize && style.fontSize === undefined) style.fontSize = bodyRegion.style.fontSize;
+    if (bodyRegion?.style?.lineHeight && style.lineHeight === undefined) style.lineHeight = bodyRegion.style.lineHeight;
     if (template?.background?.type === 'color' && template.background.value) {
       style.bgColor = template.background.value;
       style.textColor = this._readableTextColor(template.background.value);
     }
-    if (bodyRegion?.style?.color) style.textColor = bodyRegion.style.color;
+    if (template?.style_defaults?.textColor) style.textColor = template.style_defaults.textColor;
+    if (bodyRegion?.style?.color && !template?.style_defaults?.textColor) style.textColor = bodyRegion.style.color;
     return style;
   },
 
@@ -398,6 +430,79 @@ const LayoutApp = {
 
   _buildPreviewHtml(markdown, style) {
     const body = this._renderMarkdownToHtml(markdown);
+    const isObservationCover = style.skin === 'ai_observation_cover' ||
+      this._activeCard?.template_id === 'cover_ai_observation_v4';
+    const skinClass = isObservationCover ? 'layout-skin-observation' : '';
+    const observationSkinCss = isObservationCover ? `
+  body.layout-skin-observation {
+    background: #061A3A;
+  }
+  body.layout-skin-observation::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      linear-gradient(90deg, transparent 0 76%, rgba(90, 215, 255, .12) 76% 89%, rgba(247, 251, 255, .08) 89% 92%, transparent 92%),
+      linear-gradient(180deg, rgba(255,255,255,.08), transparent 22%, transparent 76%, rgba(255,255,255,.08));
+  }
+  body.layout-skin-observation::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    opacity: .10;
+    mix-blend-mode: screen;
+    background-image: url('data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22><filter id=%22n%22><feTurbulence type=%22fractalNoise%22 baseFrequency=%221.05%22 numOctaves=%223%22 stitchTiles=%22stitch%22/></filter><rect width=%22180%22 height=%22180%22 filter=%22url(%23n)%22 opacity=%220.70%22/></svg>');
+    background-size: 180px 180px;
+  }
+  body.layout-skin-observation .layout-md-card {
+    z-index: 1;
+    padding: 96px;
+  }
+  body.layout-skin-observation .layout-md-card::before,
+  body.layout-skin-observation .layout-md-card::after {
+    content: "";
+    position: absolute;
+    left: 96px;
+    right: 96px;
+    height: 2px;
+    background: rgba(247, 251, 255, .72);
+  }
+  body.layout-skin-observation .layout-md-card::before { top: 92px; background: #5AD7FF; }
+  body.layout-skin-observation .layout-md-card::after { bottom: 198px; }
+  body.layout-skin-observation .layout-md-body {
+    position: relative;
+    z-index: 1;
+    padding-top: 42px;
+  }
+  body.layout-skin-observation h1 {
+    max-width: 708px;
+    font-size: 88px;
+    line-height: 1.02;
+    margin: 34px 0 22px;
+    color: #F7FBFF;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  body.layout-skin-observation h2 {
+    max-width: 620px;
+    font-size: 30px;
+    line-height: 1.1;
+    margin: 0;
+    color: #5AD7FF;
+    font-weight: 800;
+  }
+  body.layout-skin-observation p {
+    max-width: 580px;
+    color: rgba(247, 251, 255, .72);
+    font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+  body.layout-skin-observation .layout-md-spacer { min-height: 210px; }
+` : '';
     return `<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>
@@ -479,7 +584,8 @@ const LayoutApp = {
     color: rgba(15, 23, 42, .38);
     border: 1px dashed rgba(15, 23, 42, .18);
   }
-</style></head><body>
+${observationSkinCss}
+</style></head><body class="${skinClass}">
   <article class="layout-md-card" data-od-id="card-root">
     <div class="layout-md-body">${body}</div>
   </article>
@@ -796,7 +902,8 @@ const LayoutApp = {
     if (!mdKeys.length && !stKeys.length) return;
     mdKeys.forEach(cardId => {
       if (this._markdownByCard.hasOwnProperty(cardId)) {
-        this._markdownByCard[cardId] = data.markdownByCard[cardId];
+        const card = this._cards.find(c => c.card_id === cardId);
+        this._markdownByCard[cardId] = this._ensureMediaTokensInMarkdown(data.markdownByCard[cardId], card);
       }
     });
     stKeys.forEach(cardId => {
@@ -993,7 +1100,7 @@ const LayoutApp = {
         card_ids: opts.range === 'current' && this._activeCardId ? [this._activeCardId] : undefined,
         format: opts.format || 'png',
         scale: opts.scale || 2,
-        set: this._setKey || 'v1',
+        set: this._setKey || 'v4',
       };
       const r = await fetch(`/api/export/${encodeURIComponent(this._company)}`, {
         method: 'POST',

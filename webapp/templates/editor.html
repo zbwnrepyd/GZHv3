@@ -81,6 +81,9 @@
     </div>
 
     <div class="editor-goto-layout" data-od-id="editor-goto-layout">
+      <button id="tf-btn-generate-layout-copy" class="layout-copy-link" type="button" title="生成每页三段排版文案">
+        生成排版文案
+      </button>
       <a id="btn-go-layout" class="go-layout-link" href="#" data-od-id="editor-btn-go-layout">进入排版 →</a>
     </div>
   </aside>
@@ -125,6 +128,42 @@
   </div>
 </main>
 
+<div id="layout-copy-progress-modal" class="layout-copy-modal hidden" role="dialog" aria-modal="true" aria-labelledby="layout-copy-progress-title">
+  <div class="layout-copy-dialog">
+    <div class="layout-copy-head">
+      <span id="layout-copy-progress-title">生成排版文案</span>
+      <button type="button" class="layout-copy-close" data-layout-copy-close aria-label="关闭">×</button>
+    </div>
+    <ol class="layout-copy-steps" aria-label="生成进度">
+      <li data-step="check">
+        <span class="layout-copy-step-dot"></span>
+        <strong>检查文字定稿</strong>
+        <small>等待开始</small>
+      </li>
+      <li data-step="compose">
+        <span class="layout-copy-step-dot"></span>
+        <strong>串联每页事实</strong>
+        <small>等待开始</small>
+      </li>
+      <li data-step="write">
+        <span class="layout-copy-step-dot"></span>
+        <strong>写入排版中心</strong>
+        <small>等待开始</small>
+      </li>
+      <li data-step="done">
+        <span class="layout-copy-step-dot"></span>
+        <strong>完成</strong>
+        <small>等待开始</small>
+      </li>
+    </ol>
+    <p id="layout-copy-progress-message">准备生成每页三段排版文案。</p>
+    <div class="layout-copy-actions">
+      <button type="button" class="layout-copy-secondary" data-layout-copy-close>留在定稿台</button>
+      <a id="layout-copy-progress-go" class="layout-copy-go hidden" href="#">进入排版</a>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script src="/static/js/confirm.js"></script>
 <script src="/static/js/editor.js"></script>
@@ -140,7 +179,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (!company) return;
 
   // 进入排版按钮 — 带当前套卡参数
-  const setKey = params.get('set') || 'v1';
+  const setKey = params.get('set') || 'v4';
   const btnLayout = document.getElementById('btn-go-layout');
   if (btnLayout) btnLayout.href = `/layout?company=${encodeURIComponent(company)}&set=${setKey}`;
 });

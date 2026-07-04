@@ -2,7 +2,11 @@ const ConfirmManager = {
   confirmed: new Set(),
 
   _totalCards() {
-    return (window.EditorApp ? EditorApp.currentSetKey : 'v1') === 'v2' ? 7 : 8;
+    if (window.EditorApp && typeof EditorApp.getCardCount === 'function') {
+      return EditorApp.getCardCount();
+    }
+    const setKey = window.EditorApp ? EditorApp.currentSetKey : 'v4';
+    return (setKey === 'v2' || setKey === 'v4') ? 7 : 8;
   },
 
   setConfirmed(cards) {

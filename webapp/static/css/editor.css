@@ -78,7 +78,31 @@ input, button, select, textarea { font: inherit; }
 }
 .btn-delete-company:hover { background: #e53e3e; color: #fff; border-color: #e53e3e; }
 
-/* 左侧「进入排版」按钮 */
+/* 左侧排版流程按钮 */
+.layout-copy-link {
+  display: block;
+  width: calc(100% - 16px);
+  padding: 8px 12px;
+  margin: 4px 8px 8px;
+  border: 1px solid var(--cyan);
+  border-radius: var(--radius);
+  background: rgba(41,184,212,.08);
+  color: var(--cyan);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .12s, background .12s, color .12s;
+}
+.layout-copy-link:hover {
+  background: rgba(41,184,212,.14);
+  border-color: var(--cyan-hover);
+  color: var(--cyan-hover);
+}
+.layout-copy-link:disabled {
+  opacity: .72;
+  cursor: wait;
+}
 .go-layout-link {
   display: block; padding: 8px 12px; margin: 4px 8px;
   background: var(--cyan); color: var(--white);
@@ -92,6 +116,141 @@ input, button, select, textarea { font: inherit; }
   padding: 8px 0 12px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.layout-copy-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 27, 42, .42);
+}
+.layout-copy-dialog {
+  width: min(520px, 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--white);
+  box-shadow: 0 22px 60px rgba(13, 27, 42, .2);
+}
+.layout-copy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  color: var(--navy);
+  font-size: 16px;
+  font-weight: 800;
+}
+.layout-copy-close {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.layout-copy-close:hover {
+  border-color: var(--cyan);
+  color: var(--cyan);
+}
+.layout-copy-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 18px 18px 10px;
+  list-style: none;
+}
+.layout-copy-steps li {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  align-items: center;
+  color: var(--text-muted);
+}
+.layout-copy-step-dot {
+  grid-row: 1 / span 2;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--white);
+}
+.layout-copy-steps strong {
+  color: var(--navy);
+  font-size: 14px;
+}
+.layout-copy-steps small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.layout-copy-steps li.active .layout-copy-step-dot {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  box-shadow: 0 0 0 4px rgba(41,184,212,.16);
+}
+.layout-copy-steps li.done .layout-copy-step-dot {
+  border-color: var(--green);
+  background: var(--green);
+}
+.layout-copy-steps li.error .layout-copy-step-dot {
+  border-color: #D92D20;
+  background: #D92D20;
+}
+#layout-copy-progress-message {
+  min-height: 22px;
+  margin: 0;
+  padding: 4px 18px 16px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+}
+#layout-copy-progress-message.error { color: #D92D20; }
+.layout-copy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--border);
+}
+.layout-copy-secondary,
+.layout-copy-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.layout-copy-secondary {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.layout-copy-secondary:hover {
+  border-color: var(--border-strong);
+  color: var(--navy);
+}
+.layout-copy-go {
+  border: 1px solid var(--cyan);
+  background: var(--cyan);
+  color: var(--white);
+}
+.layout-copy-go:hover {
+  background: var(--cyan-hover);
+  text-decoration: none;
 }
 
 #research-desk {
@@ -848,6 +1007,10 @@ input, button, select, textarea { font: inherit; }
   cursor: pointer; white-space: nowrap; flex-shrink: 0;
 }
 .tf-save-btn:hover { background: var(--cyan-hover); }
+.tf-btn-confirm-all:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* ── 套卡选择器 ── */
 .card-set-selector {

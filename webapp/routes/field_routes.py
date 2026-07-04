@@ -5,6 +5,7 @@ from config import config
 from services.field_service import (
     get_fields_with_versions, finalize_field, batch_finalize,
 )
+from services.layout_copy_service import generate_layout_copy_for_company
 
 
 def register(bp: Blueprint):
@@ -79,5 +80,45 @@ def register(bp: Blueprint):
             field_values = data.get("field_values", {})
             count = batch_finalize(config.DB_PATH_FINAL, company, field_values)
             return jsonify({"status": "ok", "count": count})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/fields/<company>/layout-copy", methods=["POST"])
+    def generate_layout_copy(company: str):
+        """将每页已定稿字段生成三段排版文案，并写入 layout markdown。"""
+        try:
+            data = request.get_json() or {}
+            set_key = (
+                data.get("card_set_key")
+                or request.args.get("set")
+                or config.DEFAULT_CARD_SET_KEY
+            )
+            if not config.DEEPSEEK_API_KEY:
+                return jsonify({"error": "缺少 DEEPSEEK_API_KEY，无法生成 AI 排版文案"}), 400
+
+            def _call(system_prompt: str, user_message: str) -> str:
+                from deepseek_client import call_deepseek
+                return call_deepseek(
+                    config.DEEPSEEK_API_KEY,
+                    system_prompt,
+                    user_message,
+                    model=config.DEEPSEEK_FLASH_MODEL,
+                    temperature=0.2,
+                    max_tokens=6000,
+                    timeout=120,
+                )
+
+            result = generate_layout_copy_for_company(
+                research_db_path=config.DB_PATH_RESEARCH,
+                final_db_path=config.DB_PATH_FINAL,
+                composition_db_path=config.DB_PATH_COMPOSITION,
+                template_db_path=config.DB_PATH_TEMPLATE,
+                company_name=company,
+                card_set_key=set_key,
+                call_llm=_call,
+            )
+            return jsonify({"status": "ok", **result})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500

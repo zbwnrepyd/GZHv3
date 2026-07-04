@@ -53,7 +53,11 @@ CRITICAL_GAPS: dict[str, list[str]] = {
     "product": ["main_product_name", "main_product_def",
                 "main_product_achievement"],
     "gtm": ["gtm_strategy", "cold_start", "customer_segment"],
-    "market_size": ["tam", "sam", "som", "market_cagr"],
+    "market_size": [
+        "tam", "sam", "som", "market_cagr",
+        "market_size_value", "market_size_currency", "market_size_year",
+        "tam_value", "tam_currency", "tam_year",
+    ],
     "revenue_metrics": ["arr", "mrr", "revenue_metrics"],
     "user_metrics": ["registered_users", "active_users", "paying_users",
                      "growth_metrics"],

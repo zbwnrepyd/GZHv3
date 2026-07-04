@@ -47,6 +47,7 @@ class Config:
         "IMAGE_API_URL", "https://api.openai.com/v1/images/generations"
     )
     FLASK_PORT: int = int(os.environ.get("FLASK_PORT", "5050"))
+    DEFAULT_CARD_SET_KEY: str = os.environ.get("DEFAULT_CARD_SET_KEY", "v4")
 
     # 数据库路径，开发环境默认在当前项目 db/ 下
     DB_PATH_RESEARCH: str = os.environ.get(
@@ -101,16 +102,17 @@ class Config:
             "TAVILY_ESCALATE_RAW_CONTENT_INTENTS"
         ) or ["market_size", "pricing_details", "customers", "unit_economics"]
     )
-    TAVILY_SEARCH_DEPTH: str = os.environ.get("TAVILY_SEARCH_DEPTH", "basic")
+    TAVILY_SEARCH_DEPTH: str = os.environ.get("TAVILY_SEARCH_DEPTH", "advanced")
     TAVILY_INCLUDE_RAW_CONTENT: bool = os.environ.get("TAVILY_INCLUDE_RAW_CONTENT", "0") == "1"
     TAVILY_CACHE_TTL_SECONDS: int = int(os.environ.get("TAVILY_CACHE_TTL_SECONDS", "86400"))
     COLLECTION_MIN_UNIQUE_URLS: int = int(os.environ.get("COLLECTION_MIN_UNIQUE_URLS", "10"))
     COLLECTION_MIN_INTENTS: int = int(os.environ.get("COLLECTION_MIN_INTENTS", "2"))
-    RESEARCH_COMPLETENESS_MIN: float = float(os.environ.get("RESEARCH_COMPLETENESS_MIN", "0.85"))
+    RESEARCH_COMPLETENESS_MIN: float = float(os.environ.get("RESEARCH_COMPLETENESS_MIN", "0.95"))
+    RESEARCH_FIELD_COVERAGE_MIN: float = float(os.environ.get("RESEARCH_FIELD_COVERAGE_MIN", "0.95"))
     RESEARCH_COMPLETENESS_GATE: bool = os.environ.get("RESEARCH_COMPLETENESS_GATE", "1") == "1"
     COLLECTION_ENABLE_GAP_REFETCH: bool = os.environ.get("COLLECTION_ENABLE_GAP_REFETCH", "1") == "1"
     EVIDENCE_SPAN_BINDING_ENABLED: bool = os.environ.get("EVIDENCE_SPAN_BINDING_ENABLED", "1") == "1"
-    COLLECTION_WEBSITE_SUFFICIENT_CHARS: int = int(os.environ.get("COLLECTION_WEBSITE_SUFFICIENT_CHARS", "3000"))
+    COLLECTION_WEBSITE_SUFFICIENT_CHARS: int = int(os.environ.get("COLLECTION_WEBSITE_SUFFICIENT_CHARS", "1500"))
     COLLECTION_GAP_QUERY_LIMIT: int = int(os.environ.get("COLLECTION_GAP_QUERY_LIMIT", "8"))
 
     # ── 噪音与上下文治理 ──

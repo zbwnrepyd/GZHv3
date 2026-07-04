@@ -216,23 +216,68 @@ def _load_field_contract_keys() -> list[str]:
     return keys
 
 
-def _load_required_field_contract_keys() -> list[str]:
+def _load_field_contract_meta() -> dict[str, dict]:
     contract_path = os.path.join(_project_root(), "contracts", "fields.json")
     try:
         with open(contract_path, encoding="utf-8") as f:
             contract = json.load(f)
     except Exception:
-        return []
+        return {}
 
-    keys = []
+    meta = {}
     for group in contract.get("groups", []):
         for field in group.get("fields", []):
-            if field.get("deprecated"):
-                continue
             key = field.get("field_key")
-            if key and field.get("required") is True and key not in keys:
-                keys.append(key)
+            if key and key not in meta:
+                meta[key] = field
+    return meta
+
+
+def _load_required_field_contract_keys() -> list[str]:
+    keys = []
+    for key, field in _load_field_contract_meta().items():
+        if field.get("deprecated"):
+            continue
+        if field.get("required") is True and key not in keys:
+            keys.append(key)
     return keys
+
+
+def _load_quality_field_targets(card_set_key: str | None = None) -> list[str]:
+    """Active card-set fields worth gap refetching before rendering cards."""
+    active_set = card_set_key or getattr(config, "DEFAULT_CARD_SET_KEY", "v4") or "v4"
+    contract_meta = _load_field_contract_meta()
+    targets = list(dict.fromkeys(
+        _load_required_field_contract_keys()
+        + _load_card_set_field_targets((active_set,))
+    ))
+    return [
+        field for field in targets
+        if field in contract_meta
+        and not contract_meta[field].get("deprecated")
+    ]
+
+
+def _load_quality_gate_field_targets(card_set_key: str | None = None) -> list[str]:
+    """Hard fields that may fail the research job when absent.
+
+    Card layouts can include useful-but-conditional facts such as customer names,
+    team size, founder achievements, or other product lines. Those should trigger
+    gap refetches, but a null result is still a valid public-data conclusion and
+    must not force the pipeline to invent data or fail before writing
+    unavailable/manual-needed statuses.
+    """
+    active_set = card_set_key or getattr(config, "DEFAULT_CARD_SET_KEY", "v4") or "v4"
+    active_fields = set(_load_card_set_field_targets((active_set,)))
+    soft_required_fields = {
+        "customer_names",
+        "founded_date",
+    }
+    return [
+        field for field in _load_required_field_contract_keys()
+        if field in active_fields
+        and field not in soft_required_fields
+    ]
 
 
 def _extract_contract_field_values(record: dict) -> dict[str, object]:
@@ -261,18 +306,118 @@ def _evaluate_l3_value_gaps(record: dict) -> dict:
         version = (record or {}).get("version", "standard")
         raise RuntimeError(f"L3 {version} 版未返回任何可用契约字段")
 
-    required_fields = _load_required_field_contract_keys()
-    missing_required = [
-        key for key in required_fields
+    target_fields = _load_quality_field_targets()
+    missing_targets = [
+        key for key in target_fields
         if _is_missing_value(field_values.get(key))
     ]
+    covered_target_count = len(target_fields) - len(missing_targets)
+    coverage_ratio = _ratio(covered_target_count, len(target_fields))
+    coverage_threshold = float(getattr(
+        config,
+        "RESEARCH_FIELD_COVERAGE_MIN",
+        getattr(config, "RESEARCH_COMPLETENESS_MIN", 0.95),
+    ))
     return {
-        "should_refetch": bool(missing_required),
-        "missing_required_fields": missing_required,
+        "should_refetch": coverage_ratio < coverage_threshold,
+        "missing_required_fields": missing_targets,
+        "field_coverage_ratio": round(coverage_ratio, 4),
+        "field_coverage_threshold": coverage_threshold,
+        "target_field_count": len(target_fields),
         "field_count": len(field_values),
         "usable_field_count": len(usable_fields),
         "usable_content_field_count": len(usable_content_fields),
     }
+
+
+_MARKET_GAP_FIELDS = {
+    "market_size_value", "market_size_currency", "market_size_year",
+    "market_cagr", "tam_value", "tam_currency", "tam_year",
+}
+
+_L3_GAP_FIELD_LABELS = {
+    "founded_date": "founded year launch date company history",
+    "customer_names": "customers clients case studies logos testimonials",
+    "founder_name": "founder CEO LinkedIn biography",
+    "founder_bg": "founder background biography previous company",
+    "founder_achievement": "founder achievements track record",
+    "other_products": "products product line features",
+    "cost_advantage": "cost advantage business model pricing efficiency",
+    "inference_cost_exposure": "AI inference cost exposure margins",
+    "growth_metrics": "growth metrics traction users revenue",
+    "mau": "monthly active users MAU traction",
+}
+
+
+def _market_query_terms(record: dict, display_name: str) -> list[str]:
+    values = [
+        record.get("market_track"),
+        record.get("market_subtrack"),
+        record.get("industry_positioning"),
+        record.get("core_business"),
+        record.get("company_def"),
+    ]
+    haystack = " ".join(str(v or "") for v in values + [display_name]).lower()
+    terms: list[str] = []
+    if any(token in haystack for token in ("融资", "募资", "fundrais", "investor", "投资人")):
+        terms.append("AI fundraising software")
+        terms.append("investor matching platform")
+        terms.append("startup fundraising automation")
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in terms:
+            terms.append(text)
+    if not terms:
+        terms.append(display_name)
+    return terms[:4]
+
+
+def _build_l3_gap_refetch_queries(
+    display_name: str,
+    website_host: str,
+    record: dict,
+    missing_fields: list[str],
+    limit: int = 8,
+) -> list[dict]:
+    """Build semantic Tavily queries for L3 value gaps."""
+    queries: list[dict] = []
+    seen: set[str] = set()
+
+    def add(query: str, intent: str, fields: list[str]) -> None:
+        if len(queries) >= limit:
+            return
+        normalized = " ".join(query.split())
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        queries.append({
+            "query": normalized,
+            "intent": intent,
+            "fields": fields,
+            "search_depth": "advanced",
+        })
+
+    market_fields = [f for f in missing_fields if f in _MARKET_GAP_FIELDS]
+    if market_fields:
+        terms = _market_query_terms(record, display_name)
+        primary = terms[0]
+        add(f'"{primary}" market size CAGR TAM forecast 2025 2026 report',
+            "market_size", market_fields)
+        add(f'"{primary}" total addressable market fundraising software report',
+            "market_size", market_fields)
+        if len(terms) > 1:
+            add(f'"{terms[1]}" market size growth forecast CAGR',
+                "market_size", market_fields)
+
+    for field in missing_fields:
+        if field in _MARKET_GAP_FIELDS:
+            continue
+        hint = _L3_GAP_FIELD_LABELS.get(field, field.replace("_", " "))
+        add(f'"{display_name}" {hint}', "gap_refetch", [field])
+        if website_host:
+            add(f'site:{website_host} {hint}', "gap_refetch", [field])
+
+    return queries[:limit]
 
 
 def _fields_from_card_config(config_json: str) -> list[str]:
@@ -286,7 +431,7 @@ def _fields_from_card_config(config_json: str) -> list[str]:
     ]
 
 
-def _load_card_set_field_targets(set_keys: tuple[str, ...] = ("v1", "v2", "v3")) -> list[str]:
+def _load_card_set_field_targets(set_keys: tuple[str, ...] = ("v1", "v2", "v3", "v4")) -> list[str]:
     fields = []
     try:
         import sqlite3
@@ -306,6 +451,19 @@ def _load_card_set_field_targets(set_keys: tuple[str, ...] = ("v1", "v2", "v3"))
                     fields.append(field)
     except Exception:
         fields = []
+
+    card_sets_dir = os.path.join(_project_root(), "contracts", "card_sets")
+    for set_key in set_keys:
+        json_path = os.path.join(card_sets_dir, f"{set_key}.json")
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                card_set = json.load(f)
+            for card in card_set.get("cards", []):
+                for field in card.get("fields", []):
+                    if isinstance(field, str) and field not in fields:
+                        fields.append(field)
+        except Exception:
+            pass
 
     if fields:
         return fields
@@ -925,7 +1083,8 @@ def _evaluate_research_completeness(
     )
     evidence_score = _ratio(evidence_count, 20)
 
-    required_fields = _load_required_field_contract_keys()
+    required_fields = _load_quality_gate_field_targets()
+    quality_fields = _load_quality_field_targets()
     record_values: dict[str, object] = {}
     for record in records or []:
         for key, value in (record or {}).items():
@@ -940,6 +1099,18 @@ def _evaluate_research_completeness(
     else:
         missing_required = []
         field_score = None
+    if records and quality_fields:
+        missing_quality = [
+            key for key in quality_fields
+            if _is_missing_value(record_values.get(key))
+        ]
+        quality_field_score = _ratio(
+            len(quality_fields) - len(missing_quality),
+            len(quality_fields),
+        )
+    else:
+        missing_quality = []
+        quality_field_score = None
 
     if field_score is None:
         completeness = 0.65 * source_score + 0.35 * evidence_score
@@ -977,6 +1148,9 @@ def _evaluate_research_completeness(
         "field_score": None if field_score is None else round(field_score, 4),
         "required_field_count": len(required_fields),
         "missing_required_fields": missing_required,
+        "quality_field_score": None if quality_field_score is None else round(quality_field_score, 4),
+        "quality_field_count": len(quality_fields),
+        "missing_quality_fields": missing_quality,
         "weak_sources": weak_sources,
         "recommendations": recommendations,
     }
@@ -3526,6 +3700,7 @@ def run_pipeline(company_name: str, company_url: str,
     )
     _check_cancel()
     raw["_evidence_pool"] = _build_evidence_pool(raw)
+    _translate_evidence_pool_on_collection(raw["_evidence_pool"])
     _check_cancel()
     _persist_evidence(company_name, raw["_evidence_pool"])
 
@@ -3574,6 +3749,7 @@ def run_pipeline(company_name: str, company_url: str,
                 raw["_source_summary"]["tavily"] = tavily_summary
                 raw["_source_summary"]["tavily_search"] = tavily_summary
                 raw["_evidence_pool"] = _build_evidence_pool(raw)
+                _translate_evidence_pool_on_collection(raw["_evidence_pool"])
                 _persist_evidence(company_name, raw["_evidence_pool"])
                 raw["_pre_gap_refetch"] = {"extra_queries": len(extra), "reason": "low_initial_recall"}
                 _report(progress_callback, "补采", {
@@ -3697,10 +3873,13 @@ def run_pipeline(company_name: str, company_url: str,
 
                 gap_fields = l3_gap_report["missing_required_fields"][:8]
                 if gap_fields:
-                    gap_queries = []
-                    for fk in gap_fields[:4]:  # 最多4条，补采使用 advanced 深度搜索
-                        q = f'"{identity_display}" {fk.replace("_", " ")}'
-                        gap_queries.append({"query": q, "intent": "gap_refetch", "search_depth": "advanced"})
+                    gap_queries = _build_l3_gap_refetch_queries(
+                        identity_display,
+                        identity_host,
+                        standard,
+                        gap_fields,
+                        limit=8,
+                    )
 
                     if gap_queries:
                         supplement = _search_tavily(gap_queries, progress_callback, job_id)
@@ -3710,6 +3889,7 @@ def run_pipeline(company_name: str, company_url: str,
                         raw["_source_summary"]["tavily"] = tavily_summary
                         raw["_source_summary"]["tavily_search"] = tavily_summary
                         raw["_evidence_pool"] = _build_evidence_pool(raw)
+                        _translate_evidence_pool_on_collection(raw["_evidence_pool"])
                         _persist_evidence(company_name, raw["_evidence_pool"])
 
                         # 重建文档治理
@@ -3767,7 +3947,7 @@ def run_pipeline(company_name: str, company_url: str,
     ids = []
 
     # Step 3.5: 写入字段级表（解耦架构 — 字段不天然属于任何卡片）
-    from services.field_service import split_research_to_fields, translate_field_value_if_needed
+    from services.field_service import split_research_to_fields, translate_field_rows_if_needed
     from repositories.field_repo import insert_research_fields_batch
     all_extracted_fields = {}
     for record in records:
@@ -3782,9 +3962,7 @@ def run_pipeline(company_name: str, company_url: str,
         field_rows = split_research_to_fields(field_record, version)
         if field_rows:
             # ── 英文值自动翻译为中文（p0: 防止 LLM 输出英文穿透到前端）──
-            for fr in field_rows:
-                fr["field_value"] = translate_field_value_if_needed(
-                    fr.get("field_key", ""), fr.get("field_value", ""))
+            translate_field_rows_if_needed(field_rows)
             # Collect fields for post-write snapshot
             for fr in field_rows:
                 fk = fr.get("field_key", "")
